@@ -1,0 +1,19 @@
+#pragma once
+
+#include <cstdint>
+#include <optional>
+#include <string>
+#include <string_view>
+#include <unordered_map>
+#include <vector>
+
+namespace engine::text {
+
+std::optional<int64_t> parse_text_chunk_size_override(
+    const std::unordered_map<std::string, std::string> & options);
+
+std::vector<std::string> split_text_chunks(
+    std::string_view text,
+    int64_t codepoint_budget);
+
+}  // namespace engine::text

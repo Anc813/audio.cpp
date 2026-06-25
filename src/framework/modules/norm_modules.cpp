@@ -1,0 +1,304 @@
+#include "engine/framework/modules/norm_modules.h"
+#include "tensor_layout_utils.h"
+
+#include <stdexcept>
+
+namespace engine::modules {
+
+namespace {
+
+const core::ModulePortSpec kNormInputs[] = {
+    {"input", core::PortKind::Activation, false},
+    {"weight", core::PortKind::Parameter, true},
+    {"bias", core::PortKind::Parameter, true},
+};
+
+const core::ModulePortSpec kNormOutputs[] = {
+    {"output", core::PortKind::Activation, false},
+};
+
+const core::ModuleSchema kLayerNormSchema = {
+    "LayerNorm",
+    "nn.normalization",
+    kNormInputs,
+    3,
+    kNormOutputs,
+    1,
+    "Applies layer normalization over the last logical dimension.",
+};
+
+const core::ModuleSchema kRmsNormSchema = {
+    "RMSNorm",
+    "nn.normalization",
+    kNormInputs,
+    3,
+    kNormOutputs,
+    1,
+    "Applies RMS normalization over the last logical dimension.",
+};
+
+const core::ModulePortSpec kAdaptiveInstanceNorm1dInputs[] = {
+    {"input", core::PortKind::Activation, false},
+    {"gamma", core::PortKind::Parameter, false},
+    {"beta", core::PortKind::Parameter, false},
+};
+
+const core::ModuleSchema kAdaptiveInstanceNorm1dSchema = {
+    "AdaptiveInstanceNorm1d",
+    "nn.normalization",
+    kAdaptiveInstanceNorm1dInputs,
+    3,
+    kNormOutputs,
+    1,
+    "Applies instance normalization over the last logical dimension and then per-channel affine modulation.",
+};
+
+const core::ModulePortSpec kBatchNorm1dEvalInputs[] = {
+    {"input", core::PortKind::Activation, false},
+    {"scale", core::PortKind::Parameter, false},
+    {"bias", core::PortKind::Parameter, true},
+};
+
+const core::ModuleSchema kBatchNorm1dEvalSchema = {
+    "BatchNorm1dEval",
+    "nn.normalization",
+    kBatchNorm1dEvalInputs,
+    3,
+    kNormOutputs,
+    1,
+    "Applies precomputed 1D batch-normalization eval scale and bias to channel-first tensors.",
+};
+
+core::TensorValue ensure_f32(
+    core::ModuleBuildContext & ctx,
+    const core::TensorValue & value) {
+    if (value.type == GGML_TYPE_F32) {
+        return value;
+    }
+    return core::wrap_tensor(ggml_cast(ctx.ggml, value.tensor, GGML_TYPE_F32), value.shape, GGML_TYPE_F32);
+}
+
+bool same_shape(const core::TensorShape & lhs, const core::TensorShape & rhs) {
+    if (lhs.rank != rhs.rank) {
+        return false;
+    }
+    for (size_t i = 0; i < lhs.rank; ++i) {
+        if (lhs.dims[i] != rhs.dims[i]) {
+            return false;
+        }
+    }
+    return true;
+}
+
+core::TensorValue apply_affine(
+    core::ModuleBuildContext & ctx,
+    const core::TensorValue & normalized,
+    const NormConfig & config,
+    const NormWeights & weights) {
+    core::TensorValue result = normalized;
+    if (config.use_weight) {
+        if (!weights.weight.has_value()) {
+            throw std::runtime_error("weight is required when NormConfig.use_weight is true");
+        }
+        core::validate_shape(*weights.weight, core::TensorShape::from_dims({config.hidden_size}), "weight");
+        const auto weight = ensure_f32(ctx, *weights.weight);
+        result = core::wrap_tensor(ggml_mul(ctx.ggml, result.tensor, weight.tensor), result.shape, GGML_TYPE_F32);
+    }
+    if (config.use_bias) {
+        if (!weights.bias.has_value()) {
+            throw std::runtime_error("bias is required when NormConfig.use_bias is true");
+        }
+        core::validate_shape(*weights.bias, core::TensorShape::from_dims({config.hidden_size}), "bias");
+        const auto bias = ensure_f32(ctx, *weights.bias);
+        result = core::wrap_tensor(ggml_add(ctx.ggml, result.tensor, bias.tensor), result.shape, GGML_TYPE_F32);
+    }
+    return result;
+}
+
+void validate_norm_config(const NormConfig & config) {
+    if (config.hidden_size <= 0) {
+        throw std::runtime_error("NormConfig.hidden_size must be positive");
+    }
+    if (!(config.eps > 0.0f)) {
+        throw std::runtime_error("NormConfig.eps must be positive");
+    }
+}
+
+template <typename NormFn>
+core::TensorValue build_norm(
+    core::ModuleBuildContext & ctx,
+    const core::TensorValue & input,
+    const NormConfig & config,
+    const NormWeights & weights,
+    NormFn fn) {
+    if (ctx.ggml == nullptr) {
+        throw std::runtime_error("ModuleBuildContext.ggml is null");
+    }
+    core::validate_rank_between(input, 1, core::kMaxTensorRank, "input");
+    core::validate_last_dim(input, config.hidden_size, "input");
+    const auto input_contiguous = tensor_layout::ensure_contiguous_layout_if_needed(ctx, input);
+    core::TensorValue normalized = core::wrap_tensor(fn(ctx.ggml, input_contiguous.tensor, config.eps), input.shape, GGML_TYPE_F32);
+    return apply_affine(ctx, normalized, config, weights);
+}
+
+core::TensorShape make_channel_broadcast_shape(const core::TensorShape & input, int64_t hidden_size) {
+    core::TensorShape shape = {};
+    shape.rank = input.rank;
+    for (size_t i = 0; i < shape.rank; ++i) {
+        shape.dims[i] = 1;
+    }
+    shape.dims[shape.rank - 2] = hidden_size;
+    return shape;
+}
+
+core::TensorValue repeat_channels(
+    core::ModuleBuildContext & ctx,
+    const core::TensorValue & value,
+    const core::TensorValue & like,
+    int64_t channels,
+    const char * name) {
+    core::validate_shape(value, core::TensorShape::from_dims({channels}), name);
+    const auto reshaped = core::reshape_tensor(ctx, ensure_f32(ctx, value), make_channel_broadcast_shape(like.shape, channels));
+    return core::wrap_tensor(ggml_repeat(ctx.ggml, reshaped.tensor, like.tensor), like.shape, GGML_TYPE_F32);
+}
+
+}  // namespace
+
+LayerNormModule::LayerNormModule(NormConfig config) : config_(config) {
+    validate_norm_config(config_);
+}
+
+const core::ModuleSchema & LayerNormModule::schema() const noexcept {
+    return static_schema();
+}
+
+const NormConfig & LayerNormModule::config() const noexcept {
+    return config_;
+}
+
+core::TensorValue LayerNormModule::build(
+    core::ModuleBuildContext & ctx,
+    const core::TensorValue & input,
+    const NormWeights & weights) const {
+    return build_norm(ctx, input, config_, weights, ggml_norm);
+}
+
+const core::ModuleSchema & LayerNormModule::static_schema() noexcept {
+    return kLayerNormSchema;
+}
+
+RMSNormModule::RMSNormModule(NormConfig config) : config_(config) {
+    validate_norm_config(config_);
+}
+
+const core::ModuleSchema & RMSNormModule::schema() const noexcept {
+    return static_schema();
+}
+
+const NormConfig & RMSNormModule::config() const noexcept {
+    return config_;
+}
+
+core::TensorValue RMSNormModule::build(
+    core::ModuleBuildContext & ctx,
+    const core::TensorValue & input,
+    const NormWeights & weights) const {
+    return build_norm(ctx, input, config_, weights, ggml_rms_norm);
+}
+
+const core::ModuleSchema & RMSNormModule::static_schema() noexcept {
+    return kRmsNormSchema;
+}
+
+AdaptiveInstanceNorm1dModule::AdaptiveInstanceNorm1dModule(AdaptiveInstanceNorm1dConfig config) : config_(config) {
+    if (config_.hidden_size <= 0) {
+        throw std::runtime_error("AdaptiveInstanceNorm1dConfig.hidden_size must be positive");
+    }
+    if (!(config_.eps > 0.0f)) {
+        throw std::runtime_error("AdaptiveInstanceNorm1dConfig.eps must be positive");
+    }
+}
+
+const core::ModuleSchema & AdaptiveInstanceNorm1dModule::schema() const noexcept {
+    return static_schema();
+}
+
+const AdaptiveInstanceNorm1dConfig & AdaptiveInstanceNorm1dModule::config() const noexcept {
+    return config_;
+}
+
+core::TensorValue AdaptiveInstanceNorm1dModule::build(
+    core::ModuleBuildContext & ctx,
+    const core::TensorValue & input,
+    const AdaptiveInstanceNorm1dWeights & weights) const {
+    if (ctx.ggml == nullptr) {
+        throw std::runtime_error("ModuleBuildContext.ggml is null");
+    }
+    core::validate_rank_between(input, 2, core::kMaxTensorRank, "input");
+    if (input.shape.dims[input.shape.rank - 2] != config_.hidden_size) {
+        throw std::runtime_error("AdaptiveInstanceNorm1d input hidden dimension mismatch");
+    }
+
+    const auto input_contiguous = tensor_layout::ensure_contiguous_layout_if_needed(ctx, input);
+    const auto normalized = core::wrap_tensor(ggml_norm(ctx.ggml, input_contiguous.tensor, config_.eps), input.shape, GGML_TYPE_F32);
+    core::TensorValue gamma_broadcast = {};
+    core::TensorValue beta_broadcast = {};
+    if (same_shape(weights.gamma.shape, input.shape) && same_shape(weights.beta.shape, input.shape)) {
+        gamma_broadcast = ensure_f32(ctx, weights.gamma);
+        beta_broadcast = ensure_f32(ctx, weights.beta);
+    } else {
+        core::validate_shape(weights.gamma, core::TensorShape::from_dims({config_.hidden_size}), "gamma");
+        core::validate_shape(weights.beta, core::TensorShape::from_dims({config_.hidden_size}), "beta");
+        const auto broadcast_shape = make_channel_broadcast_shape(input.shape, config_.hidden_size);
+        gamma_broadcast = core::reshape_tensor(ctx, ensure_f32(ctx, weights.gamma), broadcast_shape);
+        beta_broadcast = core::reshape_tensor(ctx, ensure_f32(ctx, weights.beta), broadcast_shape);
+    }
+    const auto scaled = core::wrap_tensor(ggml_mul(ctx.ggml, normalized.tensor, gamma_broadcast.tensor), input.shape, GGML_TYPE_F32);
+    return core::wrap_tensor(ggml_add(ctx.ggml, scaled.tensor, beta_broadcast.tensor), input.shape, GGML_TYPE_F32);
+}
+
+const core::ModuleSchema & AdaptiveInstanceNorm1dModule::static_schema() noexcept {
+    return kAdaptiveInstanceNorm1dSchema;
+}
+
+BatchNorm1dEvalModule::BatchNorm1dEvalModule(BatchNorm1dEvalConfig config) : config_(config) {
+    if (config_.channels <= 0) {
+        throw std::runtime_error("BatchNorm1dEvalConfig.channels must be positive");
+    }
+}
+
+const core::ModuleSchema & BatchNorm1dEvalModule::schema() const noexcept {
+    return static_schema();
+}
+
+const BatchNorm1dEvalConfig & BatchNorm1dEvalModule::config() const noexcept {
+    return config_;
+}
+
+core::TensorValue BatchNorm1dEvalModule::build(
+    core::ModuleBuildContext & ctx,
+    const core::TensorValue & input,
+    const BatchNorm1dEvalWeights & weights) const {
+    if (ctx.ggml == nullptr) {
+        throw std::runtime_error("ModuleBuildContext.ggml is null");
+    }
+    core::validate_rank_between(input, 3, 3, "input");
+    if (input.shape.dims[1] != config_.channels) {
+        throw std::runtime_error("BatchNorm1dEval input channel count mismatch");
+    }
+
+    const auto input_contiguous = tensor_layout::ensure_contiguous_layout_if_needed(ctx, ensure_f32(ctx, input));
+    const auto scale = repeat_channels(ctx, weights.scale, input_contiguous, config_.channels, "scale");
+    const auto bias = repeat_channels(ctx, weights.bias, input_contiguous, config_.channels, "bias");
+    const auto scaled = core::wrap_tensor(
+        ggml_mul(ctx.ggml, input_contiguous.tensor, scale.tensor),
+        input.shape,
+        GGML_TYPE_F32);
+    return core::wrap_tensor(ggml_add(ctx.ggml, scaled.tensor, bias.tensor), input.shape, GGML_TYPE_F32);
+}
+
+const core::ModuleSchema & BatchNorm1dEvalModule::static_schema() noexcept {
+    return kBatchNorm1dEvalSchema;
+}
+
+}  // namespace engine::modules
