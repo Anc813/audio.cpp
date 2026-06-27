@@ -187,6 +187,28 @@ FAMILY_CONFIG: dict[str, dict[str, Any]] = {
         "case_catalog": "tests/qwen3_forced_aligner/qwen3_forced_aligner_warm_bench_cases.json",
         "strict_alignment": True,
     },
+    "sortformer": {
+        "kind": "diar",
+        "modes": ["offline"],
+        "cpp_bin": "build/debug/bin/sortformer_diar_warm_bench",
+        "python_script": "tests/sortformer_diar/sortformer_diar_python_warm_bench.py",
+        "model": "models/diar_sortformer_4spk-v1",
+        "python_model": "nvidia/diar_sortformer_4spk-v1",
+    },
+    "citrinet_asr": {
+        "kind": "asr",
+        "modes": ["offline"],
+        "cpp_bin": "build/debug/bin/citrinet_asr_warm_bench",
+        "python_script": "tests/citrinet_asr/citrinet_asr_python_warm_bench.py",
+        "model": "models/citrinet",
+    },
+    "marblenet_vad": {
+        "kind": "vad",
+        "modes": ["offline"],
+        "cpp_bin": "build/debug/bin/marblenet_vad_warm_bench",
+        "python_script": "tests/marblenet_vad/marblenet_vad_python_warm_bench.py",
+        "model": "models/marblenet_vad",
+    },
     "vevo2": {
         "kind": "vevo2",
         "modes": ["offline"],
@@ -1226,6 +1248,27 @@ def compare_qwen3_forced_aligner_step(
         "expected_words": expected_words,
         "missing_words": missing_words,
     }
+
+
+def compare_sortformer_step(cpp_step: dict[str, Any], py_step: dict[str, Any]) -> dict[str, Any]:
+    mismatches: list[str] = []
+    sample_tolerance = 1
+    cpp_turns = cpp_step.get("speaker_turns", [])
+    py_turns = py_step.get("speaker_turns", [])
+    if len(cpp_turns) != len(py_turns):
+        mismatches.append("turn_count")
+    else:
+        for index, (cpp_turn, py_turn) in enumerate(zip(cpp_turns, py_turns)):
+            if cpp_turn.get("speaker_id") != py_turn.get("speaker_id"):
+                mismatches.append(f"speaker_id[{index}]")
+                break
+            if abs(int(cpp_turn.get("start_sample", 0)) - int(py_turn.get("start_sample", 0))) > sample_tolerance:
+                mismatches.append(f"start_sample[{index}]")
+                break
+            if abs(int(cpp_turn.get("end_sample", 0)) - int(py_turn.get("end_sample", 0))) > sample_tolerance:
+                mismatches.append(f"end_sample[{index}]")
+                break
+    return {"ok": not mismatches, "reason": "ok" if not mismatches else f"mismatch:{mismatches[0]}", "mismatches": mismatches}
 
 
 def compare_vad_step(cpp_step: dict[str, Any], py_step: dict[str, Any]) -> dict[str, Any]:
@@ -2712,6 +2755,8 @@ def run_scenario(
                         python_summary["sequence_steps"][request_index],
                         expected_words[request_index] if request_index < len(expected_words) else [],
                     )
+                elif sequence_kind == "diar":
+                    parity = compare_sortformer_step(cpp_summary["sequence_steps"][request_index], python_summary["sequence_steps"][request_index])
                 else:
                     raise RuntimeError(f"unsupported warmbench sequence kind: {sequence_kind}")
                 parity["request_index"] = request_index

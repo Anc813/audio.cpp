@@ -25,9 +25,18 @@ Current model status in the framework:
 - `integration`: The model is end-to-end working and optimized, but not yet fully wired into the broader framework surface. Those models are expected to be added to the broader framework surface gradually over time.
 - `optimization`: The model is end-to-end working, but still needs more optimization work before it should be treated like a released or integration-level path.
 
+### News
+
+| Release date | Released models |
+|---|---|
+| 2026-06-26 | `citrinet_asr`, `marblenet_vad`, `sortformer_diar` |
+| 2026-06-25 | `chatterbox`, `miocodec`, `miotts`, `omnivoice`, `pocket_tts`, `qwen3_asr`, `qwen3_forced_aligner`, `qwen3_tts`, `seed_vc`, `silero_vad`, `vevo2`, `voxcpm2` |
+
 | Family | Task | Supported language(s) | Supported variant(s) in this repo | Release status |
 |---|---|---|---|---|
 | **chatterbox** | TTS, voice cloning | ar, da, de, el, en, es, fi, fr, hi, it, ko, ms, nl, no, pl, pt, sv, sw, tr | Chatterbox with 0.5B backbone | **released** |
+| **citrinet_asr** | ASR | en | Citrinet-256 | **released** |
+| **marblenet_vad** | VAD | lang agnostic | MarbleNet VAD | **released** |
 | **miocodec** | audio codec, voice conversion backend | lang agnostic | MioCodec v2, 25 Hz, 44.1 kHz | **released** |
 | **miotts** | TTS, voice cloning | en, ja | MioTTS-1.7B | **released** |
 | **omnivoice** | TTS, voice cloning, voice design | 646+ langs | OmniVoice, Qwen3-0.6B based | **released** |
@@ -37,20 +46,18 @@ Current model status in the framework:
 | **qwen3_tts** | TTS, voice cloning, voice design | zh, en, fr, de, it, ja, ko, pt, ru, es | Qwen3-TTS-12Hz-0.6B-Base, Qwen3-TTS-12Hz-1.7B-Base, Qwen3-TTS-12Hz-1.7B-CustomVoice, Qwen3-TTS-12Hz-1.7B-VoiceDesign | **released** |
 | **seed_vc** | voice conversion | lang agnostic | SeedVC XLS-R + HiFT, SeedVC Whisper-small + BigVGAN | **released** |
 | **silero_vad** | VAD | lang agnostic | Silero VAD | **released** |
+| **sortformer_diar** | diarization | en | Sortformer-4spk-v1 | **released** |
 | **vevo2** | TTS, singing generation, voice conversion, singing conversion, editing | en, zh | Vevo2 with Qwen2.5-0.5B AR model | **released** |
 | **voxcpm2** | TTS, voice cloning, voice design | ar, da, de, el, en, es, fi, fr, he, hi, id, it, ja, km, ko, lo, ms, my, nl, no, pl, pt, ru, sv, sw, th, tl, tr, vi, zh | VoxCPM2-2B, 48 kHz | **released** |
 | ace_step | music generation | 50+ langs | ACE-Step 1.5 with acestep-5Hz-lm-1.7B | integration |
 | audio_flamingo_next | audio understanding, ASR, audio captioning, audio QA | en, multilingual audio understanding | Audio Flamingo Next Instruct, Qwen2-7B based | optimization |
-| citrinet_asr | ASR | en | Citrinet-256 | integration |
 | demucs | source separation | lang agnostic | HTDemucs, HTDemucs_ft | integration |
 | heartmula | music generation | zh, en, ja, ko, es | HeartMuLa-oss-3B with HeartCodec-oss | integration |
 | higgs_tts | TTS, voice cloning, expressive speech | 100+ languages | Higgs Audio v3 TTS 4B | integration |
 | kokoro_tts | TTS | en-us, en-gb | Kokoro-82M | integration |
-| marblenet_vad | VAD | lang agnostic | MarbleNet VAD | integration |
 | moss_tts | TTS, voice cloning | zh, yue, en, ar, cs, da, nl, fi, fr, de, el, he, hi, hu, it, ja, ko, mk, ms, fa, pl, pt, ro, ru, es, sw, sv, tl, th, tr, vi | MOSS-TTS-Nano-100M | integration |
 | parakeet_tdt | ASR | en, es, fr, de, da, nl, fi, it, pl, pt, ru, bg, cs, el | Parakeet-TDT-0.6B-v3 | integration |
 | roformer | vocal separation | lang agnostic | Mel-Band-Roformer vocal separation variants | integration |
-| sortformer_diar | diarization | en | Sortformer-4spk-v1 | integration |
 | vibevoice | TTS, multi-speaker dialogue TTS | en, zh | VibeVoice-1.5B and VibeVoice-Realtime-0.5B | integration |
 
 PocketTTS language selection is a model-load option. When the model path points at the PocketTTS root, the loader uses `english` unless you pass `--load-option language=<name>`.

@@ -4,6 +4,8 @@
 #include "engine/framework/io/config.h"
 #include "engine/framework/io/filesystem.h"
 #include "engine/models/chatterbox/loader.h"
+#include "engine/models/citrinet_asr/session.h"
+#include "engine/models/marblenet_vad/session.h"
 #include "engine/models/miocodec/loader.h"
 #include "engine/models/miotts/loader.h"
 #include "engine/models/omnivoice/loader.h"
@@ -13,6 +15,7 @@
 #include "engine/models/qwen3_tts/loader.h"
 #include "engine/models/silero_vad/session.h"
 #include "engine/models/seed_vc/loader.h"
+#include "engine/models/sortformer_diar/loader.h"
 #include "engine/models/vevo2/loader.h"
 #include "engine/models/voxcpm2/loader.h"
 
@@ -199,7 +202,10 @@ ModelRegistry make_default_registry(const std::optional<std::filesystem::path> &
         engine::models::qwen3_forced_aligner::make_qwen3_forced_aligner_loader(),
         engine::models::qwen3_asr::make_qwen3_asr_loader(),
         engine::models::qwen3_tts::make_qwen3_tts_loader(),
+        engine::models::sortformer_diar::make_sortformer_diar_loader(),
         engine::models::silero_vad::make_silero_vad_loader(),
+        engine::models::citrinet_asr::make_citrinet_asr_loader(),
+        engine::models::marblenet_vad::make_marblenet_vad_loader(),
         engine::models::vevo2::make_vevo2_loader(),
         engine::models::seed_vc::make_seed_vc_loader(),
         engine::models::chatterbox::make_chatterbox_loader(),

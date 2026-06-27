@@ -208,6 +208,10 @@ engine::runtime::GraphOptimizationBackend graph_optimizer_backend_for_test(engin
             return engine::runtime::GraphOptimizationBackend::Cpu;
         case engine::core::BackendType::Cuda:
             return engine::runtime::GraphOptimizationBackend::Gpu;
+        case engine::core::BackendType::Vulkan:
+        case engine::core::BackendType::Metal:
+        case engine::core::BackendType::BestAvailable:
+            return engine::runtime::GraphOptimizationBackend::Other;
     }
     return engine::runtime::GraphOptimizationBackend::Other;
 }
@@ -537,7 +541,7 @@ void test_conformer_conv_pad_mask_ignores_dirty_padded_frames() {
     std::vector<float> dirty_input = clean_input;
     dirty_input[12] = 2.5f; dirty_input[13] = -1.7f; dirty_input[14] = 0.9f; dirty_input[15] = 3.1f;
     dirty_input[16] = -2.2f; dirty_input[17] = 1.4f; dirty_input[18] = -0.6f; dirty_input[19] = 2.8f;
-    const std::vector<int32_t> keep_mask = {1, 1, 1, 0, 0};
+    const auto keep_mask = make_keep_mask_for_test(frames, valid_frames);
 
     auto make_weights = [](CpuModuleRunner & runner) {
         engine::modules::ConformerConvModuleWeights weights{

@@ -273,9 +273,22 @@ add_library(engine_runtime STATIC
     src/models/qwen3_forced_aligner/processor.cpp
     src/models/qwen3_forced_aligner/session.cpp
     src/models/qwen3_forced_aligner/loader.cpp
+    src/models/sortformer_diar/assets.cpp
+    src/models/sortformer_diar/frontend.cpp
+    src/models/sortformer_diar/graph.cpp
+    src/models/sortformer_diar/modules.cpp
+    src/models/sortformer_diar/postprocess.cpp
+    src/models/sortformer_diar/loader.cpp
+    src/models/sortformer_diar/session.cpp
     src/models/silero_vad/assets.cpp
     src/models/silero_vad/runtime.cpp
     src/models/silero_vad/session.cpp
+    src/models/citrinet_asr/assets.cpp
+    src/models/citrinet_asr/runtime.cpp
+    src/models/citrinet_asr/session.cpp
+    src/models/marblenet_vad/assets.cpp
+    src/models/marblenet_vad/runtime.cpp
+    src/models/marblenet_vad/session.cpp
 )
 
 add_library(cjson_vendor STATIC
@@ -401,6 +414,8 @@ if (ENGINE_BUILD_WARMBENCH)
     endfunction()
 
     add_engine_warmbench(chatterbox_warm_bench tests/chatterbox/chatterbox_warm_bench.cpp)
+    add_engine_warmbench(citrinet_asr_warm_bench tests/citrinet_asr/citrinet_asr_warm_bench.cpp)
+    add_engine_warmbench(marblenet_vad_warm_bench tests/marblenet_vad/marblenet_vad_warm_bench.cpp)
     add_engine_warmbench(miocodec_warm_bench tests/miocodec/miocodec_warm_bench.cpp)
     add_engine_warmbench(omnivoice_warm_bench tests/omnivoice/omnivoice_warm_bench.cpp)
     add_engine_warmbench(pocket_tts_warm_bench tests/pocket_tts/pocket_tts_warm_bench.cpp)
@@ -409,6 +424,7 @@ if (ENGINE_BUILD_WARMBENCH)
     add_engine_warmbench(qwen3_tts_warm_bench tests/qwen3_tts/qwen3_tts_warm_bench.cpp)
     add_engine_warmbench(seed_vc_warm_bench tests/seed_vc/seed_vc_warm_bench.cpp)
     add_engine_warmbench(silero_vad_warm_bench tests/silero_vad/silero_vad_warm_bench.cpp)
+    add_engine_warmbench(sortformer_diar_warm_bench tests/sortformer_diar/sortformer_diar_warm_bench.cpp)
     add_engine_warmbench(vevo2_warm_bench tests/vevo2/vevo2_warm_bench.cpp)
     add_engine_warmbench(voxcpm2_warm_bench tests/voxcpm2/voxcpm2_warm_bench.cpp)
 endif()
@@ -416,7 +432,7 @@ endif()
 if (ENGINE_BUILD_TESTS)
     enable_testing()
 
-    set(ENGINE_UNITTEST_ASSET_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/unittests/assets")
+    set(ENGINE_UNITTEST_ASSET_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/tests/unittests/assets")
 
     function(add_engine_unittest target source)
         add_executable(${target} ${source})
