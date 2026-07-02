@@ -57,10 +57,13 @@ Omit these unless you need explicit control. If `--seed` is omitted, models that
 | Option | Meaning |
 |---|---|
 | `--batch-text-file <txt>` | One request per non-empty text line. |
+| `--batch-text-dir <dir>` | One request per `.txt`, `.md`, or `.json` file; each file is normalized into a single paragraph. |
 | `--batch-audio-dir <dir>` | One request per `.wav` file. |
 | `--batch-audio-role audio|voice_ref|source_audio|target_voice|prosody_ref|style_ref` | How to use each batch WAV. |
 | `--batch-merge-audio none|concat` | Keep outputs separate or concatenate generated audio. |
 | `--batch-manifest-out <json>` | Write a batch output manifest. |
+
+`--batch-text-dir` reads `.txt` and `.md` files as plain text. For `.json`, use either a JSON string root or an object with a string `input` or `text` field.
 
 ## Model Docs
 

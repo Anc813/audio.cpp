@@ -339,6 +339,7 @@ Useful CLI features:
 - `--inspect` prints discovered configs, weights, and capabilities
 - `--list-loaders` prints registered model families
 - `--batch-text-file <txt>` runs one offline request per non-empty line
+- `--batch-text-dir <dir>` runs one offline request per `.txt`, `.md`, or `.json` file, normalizing each file as one paragraph
 - `--batch-audio-dir <dir>` runs one offline request per `.wav`
 - `--request-sequence <json>` runs a multi-request offline session
 - `--batch-merge-audio none|concat` controls batch audio merge behavior
