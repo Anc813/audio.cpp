@@ -440,6 +440,7 @@ add_executable(audiocpp_server
     app/server/main.cpp
     app/server/config.cpp
     app/server/http.cpp
+    app/server/multipart.cpp
     app/server/runtime.cpp
     app/cli/args.cpp
     app/cli/request.cpp

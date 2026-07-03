@@ -1,14 +1,18 @@
 #include "runtime.h"
 
+#include "multipart.h"
+
 #include "../cli/request.h"
 
 #include "engine/framework/io/json.h"
 #include "engine/framework/runtime/registry.h"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <fstream>
 #include <iostream>
 #include <sstream>
 #include <stdexcept>
@@ -128,6 +132,37 @@ std::string base64_encode(const uint8_t * data, size_t size) {
 std::string base64_encode(const std::vector<uint8_t> & bytes) {
     return base64_encode(bytes.data(), bytes.size());
 }
+
+// Multipart file uploads arrive as in-memory bytes, but the WAV decoder only reads from disk,
+// so uploaded audio is spooled to a uniquely named temp file before decoding.
+std::filesystem::path write_temp_upload(const std::string & filename, const std::string & data) {
+    std::filesystem::path ext = std::filesystem::path(filename).extension();
+    if (ext.empty()) {
+        ext = ".wav";
+    }
+    static std::atomic<uint64_t> counter{0};
+    std::ostringstream name;
+    name << "audiocpp_upload_" << Clock::now().time_since_epoch().count() << "_" << counter.fetch_add(1)
+         << ext.string();
+    const auto path = std::filesystem::temp_directory_path() / name.str();
+    std::ofstream out(path, std::ios::binary);
+    if (!out) {
+        throw std::runtime_error("failed to create temp file for upload: " + path.string());
+    }
+    out.write(data.data(), static_cast<std::streamsize>(data.size()));
+    if (!out) {
+        throw std::runtime_error("failed to write temp file for upload: " + path.string());
+    }
+    return path;
+}
+
+struct TempFileGuard {
+    std::filesystem::path path;
+    ~TempFileGuard() {
+        std::error_code ec;
+        std::filesystem::remove(path, ec);
+    }
+};
 
 double elapsed_ms(Clock::time_point started) {
     return std::chrono::duration<double, std::milli>(Clock::now() - started).count();
@@ -378,7 +413,7 @@ HttpResponse ServerState::handle(const HttpRequest & request) {
         return handle_speech(request.body);
     }
     if (request.method == "POST" && request.path == "/v1/audio/transcriptions") {
-        return handle_transcription(request.body);
+        return handle_transcription(request);
     }
     if (request.method == "POST" && request.path == "/v1/tasks/run") {
         return handle_generic_run(request.body);
@@ -483,10 +518,66 @@ HttpResponse ServerState::handle_speech(const std::string & body_text) {
     };
 }
 
-HttpResponse ServerState::handle_transcription(const std::string & body_text) {
+HttpResponse ServerState::handle_transcription(const HttpRequest & request) {
+    std::string content_type;
+    if (const auto it = request.headers.find("content-type"); it != request.headers.end()) {
+        content_type = it->second;
+    }
+    if (const auto boundary = extract_multipart_boundary(content_type)) {
+        return handle_transcription_multipart(request.body, *boundary);
+    }
+    return handle_transcription_json(request.body);
+}
+
+HttpResponse ServerState::handle_transcription_json(const std::string & body_text) {
     const auto body = engine::io::json::parse(body_text);
     auto & model = require_model(body);
     const auto request = build_openai_transcription_request(body, request_base_);
+    return run_transcription(model, request);
+}
+
+// Accepts the same multipart/form-data shape OpenAI's Whisper API (and clients built against it,
+// e.g. Open WebUI) send: a "file" part with the audio bytes, plus "model" and optional "language"
+// fields. audio.cpp's native JSON request only takes a server-local path, so the uploaded bytes are
+// spooled to a temp file and routed through the existing JSON request builder.
+HttpResponse ServerState::handle_transcription_multipart(const std::string & body_text, const std::string & boundary) {
+    const auto parts = parse_multipart_body(body_text, boundary);
+
+    const MultipartPart * file_part = nullptr;
+    std::string model_id;
+    std::string language;
+    for (const auto & part : parts) {
+        if (part.name == "file") {
+            file_part = &part;
+        } else if (part.name == "model") {
+            model_id = part.data;
+        } else if (part.name == "language") {
+            language = part.data;
+        }
+    }
+    if (file_part == nullptr || file_part->data.empty()) {
+        throw std::runtime_error("multipart transcription request requires a non-empty 'file' field");
+    }
+    if (model_id.empty()) {
+        throw std::runtime_error("multipart transcription request requires a 'model' field");
+    }
+
+    const TempFileGuard guard{write_temp_upload(file_part->filename, file_part->data)};
+
+    engine::io::json::Value::Object fields;
+    fields.emplace("model", engine::io::json::Value::make_string(model_id));
+    fields.emplace("audio", engine::io::json::Value::make_string(guard.path.string()));
+    if (!language.empty()) {
+        fields.emplace("language", engine::io::json::Value::make_string(language));
+    }
+    const auto body = engine::io::json::Value::make_object(std::move(fields));
+
+    auto & model = require_model(body);
+    const auto request = build_openai_transcription_request(body, request_base_);
+    return run_transcription(model, request);
+}
+
+HttpResponse ServerState::run_transcription(LoadedModel & model, const engine::runtime::TaskRequest & request) {
     const auto timed_result = run_model(model, request);
     const auto & result = timed_result.result;
     if (!result.text_output.has_value()) {
