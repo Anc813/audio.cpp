@@ -249,12 +249,20 @@ void print_model_common_options(const engine::runtime::ModelInspection & inspect
             << "    --audio <wav>\n"
             << "    --batch-audio-dir <dir>\n";
     }
+    if (model_supports_task(inspection, engine::runtime::VoiceTaskKind::Asr)) {
+        std::cout
+            << "    --audio-chunk-seconds <float>\n"
+            << "    --audio-chunk-mode auto|fixed|vad|none\n";
+    }
     if (model_supports_task(inspection, engine::runtime::VoiceTaskKind::Alignment)) {
         std::cout
             << "    --audio <wav>\n"
             << "    --batch-audio-dir <dir>\n"
             << "    --text <text>\n"
-            << "    --language <code>\n";
+            << "    --language <code>\n"
+            << "    --text-chunk-size <chars>\n"
+            << "    --audio-chunk-seconds <float>\n"
+            << "    --audio-chunk-mode auto|fixed|none\n";
     }
 }
 

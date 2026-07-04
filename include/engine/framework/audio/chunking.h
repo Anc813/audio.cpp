@@ -3,6 +3,9 @@
 #include "engine/framework/runtime/session.h"
 
 #include <cstdint>
+#include <optional>
+#include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace engine::audio {
@@ -20,6 +23,13 @@ enum class AudioChunkTailAlignment {
 enum class AudioChunkCounterMode {
     SharedAcrossLanes,
     PerLane,
+};
+
+enum class AudioChunkMode {
+    Auto,
+    Fixed,
+    Vad,
+    None,
 };
 
 struct AudioChunkSpec {
@@ -46,9 +56,20 @@ struct VadAudioChunkOptions {
 
 std::vector<AudioChunkSpan> plan_audio_chunks(int64_t input_samples, const AudioChunkSpec & spec);
 
+AudioChunkMode parse_audio_chunk_mode(
+    const std::unordered_map<std::string, std::string> & options);
+
+std::optional<float> parse_audio_chunk_seconds_override(
+    const std::unordered_map<std::string, std::string> & options);
+
 std::vector<runtime::TimeSpan> plan_vad_audio_chunks(
     const std::vector<runtime::SpeechSegment> & segments,
     int64_t audio_samples,
+    const VadAudioChunkOptions & options);
+
+std::vector<runtime::TimeSpan> plan_vad_audio_chunks(
+    const runtime::AudioBuffer & audio,
+    runtime::IOfflineVoiceTaskSession & vad_session,
     const VadAudioChunkOptions & options);
 
 runtime::AudioBuffer slice_audio_buffer(
@@ -90,5 +111,16 @@ void normalize_overlap_added_planar(
     int64_t lanes,
     int64_t output_frames,
     AudioChunkCounterMode counter_mode);
+
+void append_chunk_word_timestamps(
+    std::vector<runtime::WordTimestamp> & output,
+    const std::vector<runtime::WordTimestamp> & chunk_words,
+    const runtime::TimeSpan & chunk_span);
+
+void append_chunk_word_timestamps(
+    std::vector<runtime::WordTimestamp> & output,
+    const std::vector<runtime::WordTimestamp> & chunk_words,
+    const runtime::TimeSpan & source_span,
+    const runtime::TimeSpan & keep_span);
 
 }  // namespace engine::audio

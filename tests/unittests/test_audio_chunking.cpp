@@ -8,6 +8,7 @@
 #include <iostream>
 #include <stdexcept>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace {
@@ -19,6 +20,47 @@ engine::runtime::SpeechSegment speech(int64_t start, int64_t end) {
     segment.confidence = 1.0F;
     return segment;
 }
+
+engine::runtime::WordTimestamp word(const std::string & text, int64_t start, int64_t end) {
+    engine::runtime::WordTimestamp timestamp;
+    timestamp.word = text;
+    timestamp.span.start_sample = start;
+    timestamp.span.end_sample = end;
+    return timestamp;
+}
+
+class MockVadSession final : public engine::runtime::IOfflineVoiceTaskSession {
+public:
+    std::string family() const override {
+        return "mock_vad";
+    }
+
+    engine::runtime::VoiceTaskKind task_kind() const override {
+        return engine::runtime::VoiceTaskKind::Vad;
+    }
+
+    engine::runtime::RunMode run_mode() const override {
+        return engine::runtime::RunMode::Offline;
+    }
+
+    void prepare(const engine::runtime::SessionPreparationRequest & request) override {
+        engine::test::require(request.audio.has_value(), "mock VAD prepare audio contract");
+        prepared = true;
+    }
+
+    engine::runtime::TaskResult run(const engine::runtime::TaskRequest & request) override {
+        engine::test::require(prepared, "mock VAD run after prepare");
+        engine::test::require(request.audio_input.has_value(), "mock VAD run audio input");
+        ++runs;
+        engine::runtime::TaskResult result;
+        result.speech_segments = segments;
+        return result;
+    }
+
+    bool prepared = false;
+    int runs = 0;
+    std::vector<engine::runtime::SpeechSegment> segments;
+};
 
 void require_span(
     const engine::runtime::TimeSpan & span,
@@ -564,6 +606,50 @@ void test_vad_chunks_validate_inputs() {
     }, "invalid audio length");
 }
 
+void test_vad_session_planner_runs_vad_internally() {
+    engine::runtime::AudioBuffer audio;
+    audio.sample_rate = 100;
+    audio.channels = 1;
+    audio.samples.assign(1000, 0.0F);
+
+    MockVadSession vad;
+    vad.segments = {
+        speech(100, 200),
+        speech(230, 300),
+        speech(700, 760),
+    };
+
+    const auto chunks = engine::audio::plan_vad_audio_chunks(audio, vad, {250, 50, 10});
+    engine::test::require(vad.prepared, "mock VAD was prepared");
+    engine::test::require_eq(vad.runs, 1, "mock VAD run count");
+    engine::test::require_eq(chunks.size(), static_cast<size_t>(2), "mock VAD planned chunk count");
+    require_span(chunks[0], 90, 310, "mock VAD first chunk");
+    require_span(chunks[1], 690, 770, "mock VAD second chunk");
+}
+
+void test_audio_chunk_mode_parser() {
+    std::unordered_map<std::string, std::string> options;
+    engine::test::require(
+        engine::audio::parse_audio_chunk_mode(options) == engine::audio::AudioChunkMode::Auto,
+        "default audio chunk mode is auto");
+    options["audio_chunk_mode"] = "fixed";
+    engine::test::require(
+        engine::audio::parse_audio_chunk_mode(options) == engine::audio::AudioChunkMode::Fixed,
+        "fixed audio chunk mode");
+    options["audio_chunk_mode"] = "vad";
+    engine::test::require(
+        engine::audio::parse_audio_chunk_mode(options) == engine::audio::AudioChunkMode::Vad,
+        "vad audio chunk mode");
+    options["audio_chunk_mode"] = "none";
+    engine::test::require(
+        engine::audio::parse_audio_chunk_mode(options) == engine::audio::AudioChunkMode::None,
+        "none audio chunk mode");
+    options["audio_chunk_mode"] = "json";
+    require_throws([&]() {
+        (void) engine::audio::parse_audio_chunk_mode(options);
+    }, "invalid audio chunk mode");
+}
+
 void test_slice_audio_buffer_preserves_channels() {
     engine::runtime::AudioBuffer audio;
     audio.sample_rate = 16000;
@@ -616,6 +702,108 @@ void test_slice_audio_buffer_validate_inputs() {
     }, "slice invalid sample rate");
 }
 
+void test_chunk_word_timestamp_merge_offsets_and_clips() {
+    std::vector<engine::runtime::WordTimestamp> merged;
+    const std::vector<engine::runtime::WordTimestamp> local{
+        word("left", -10, 30),
+        word("middle", 40, 80),
+        word("right", 90, 130),
+    };
+
+    engine::audio::append_chunk_word_timestamps(
+        merged,
+        local,
+        engine::runtime::TimeSpan{1000, 1100});
+
+    engine::test::require_eq(merged.size(), static_cast<size_t>(3), "merged chunk word count");
+    engine::test::require_eq(merged[0].word, std::string("left"), "left word kept");
+    require_span(merged[0].span, 1000, 1030, "left word clipped");
+    engine::test::require_eq(merged[1].word, std::string("middle"), "middle word kept");
+    require_span(merged[1].span, 1040, 1080, "middle word offset");
+    engine::test::require_eq(merged[2].word, std::string("right"), "right word kept");
+    require_span(merged[2].span, 1090, 1100, "right word clipped");
+}
+
+void test_chunk_word_timestamp_merge_appends_multiple_chunks() {
+    std::vector<engine::runtime::WordTimestamp> merged;
+    engine::audio::append_chunk_word_timestamps(
+        merged,
+        {word("alpha", 5, 25), word("beta", 30, 50)},
+        engine::runtime::TimeSpan{0, 100});
+    engine::audio::append_chunk_word_timestamps(
+        merged,
+        {word("gamma", 0, 20)},
+        engine::runtime::TimeSpan{100, 150});
+
+    engine::test::require_eq(merged.size(), static_cast<size_t>(3), "multi-chunk merged word count");
+    require_span(merged[0].span, 5, 25, "first chunk alpha");
+    require_span(merged[1].span, 30, 50, "first chunk beta");
+    require_span(merged[2].span, 100, 120, "second chunk gamma");
+}
+
+void test_chunk_word_timestamp_merge_keeps_non_overlapping_source_span() {
+    std::vector<engine::runtime::WordTimestamp> merged;
+    engine::audio::append_chunk_word_timestamps(
+        merged,
+        {
+            word("left_context", 20, 60),
+            word("kept_boundary", 100, 180),
+            word("kept_inside", 260, 320),
+            word("right_context", 400, 450),
+        },
+        engine::runtime::TimeSpan{900, 1400},
+        engine::runtime::TimeSpan{1000, 1300});
+
+    engine::test::require_eq(merged.size(), static_cast<size_t>(2), "keep span merged word count");
+    engine::test::require_eq(merged[0].word, std::string("kept_boundary"), "boundary word kept");
+    require_span(merged[0].span, 1000, 1080, "boundary word full source span");
+    engine::test::require_eq(merged[1].word, std::string("kept_inside"), "inside word kept");
+    require_span(merged[1].span, 1160, 1220, "inside word source span");
+}
+
+void test_chunk_word_timestamp_merge_rejects_invalid_spans() {
+    require_throws(
+        []() {
+            std::vector<engine::runtime::WordTimestamp> merged;
+            engine::audio::append_chunk_word_timestamps(
+                merged,
+                {word("bad", 20, 10)},
+                engine::runtime::TimeSpan{0, 100});
+        },
+        "inverted word timestamp");
+
+    require_throws(
+        []() {
+            std::vector<engine::runtime::WordTimestamp> merged;
+            engine::audio::append_chunk_word_timestamps(
+                merged,
+                {word("bad", 0, 10)},
+                engine::runtime::TimeSpan{100, 90});
+        },
+        "inverted chunk span");
+
+    require_throws(
+        []() {
+            std::vector<engine::runtime::WordTimestamp> merged;
+            engine::audio::append_chunk_word_timestamps(
+                merged,
+                {word("outside", 120, 140)},
+                engine::runtime::TimeSpan{1000, 1100});
+        },
+        "word outside chunk");
+
+    require_throws(
+        []() {
+            std::vector<engine::runtime::WordTimestamp> merged;
+            engine::audio::append_chunk_word_timestamps(
+                merged,
+                {word("bad", 0, 10)},
+                engine::runtime::TimeSpan{1000, 1100},
+                engine::runtime::TimeSpan{900, 1100});
+        },
+        "keep span outside source");
+}
+
 }  // namespace
 
 int main() {
@@ -638,8 +826,14 @@ int main() {
         test_vad_chunks_close_run_split_at_max_without_losing_speech();
         test_vad_chunks_stress_mixed_unsorted_segments();
         test_vad_chunks_validate_inputs();
+        test_vad_session_planner_runs_vad_internally();
+        test_audio_chunk_mode_parser();
         test_slice_audio_buffer_preserves_channels();
         test_slice_audio_buffer_validate_inputs();
+        test_chunk_word_timestamp_merge_offsets_and_clips();
+        test_chunk_word_timestamp_merge_appends_multiple_chunks();
+        test_chunk_word_timestamp_merge_keeps_non_overlapping_source_span();
+        test_chunk_word_timestamp_merge_rejects_invalid_spans();
         std::cout << "audio_chunking_test passed\n";
     } catch (const std::exception & ex) {
         std::cerr << "audio_chunking_test failed: " << ex.what() << "\n";
