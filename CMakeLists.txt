@@ -643,6 +643,23 @@ if (ENGINE_BUILD_TESTS)
         NAME server_multipart_test
         COMMAND server_multipart_test
     )
+
+    add_executable(server_config_test
+        tests/unittests/test_server_config.cpp
+        app/server/config.cpp
+        app/cli/args.cpp
+        app/cli/request.cpp
+    )
+    target_include_directories(server_config_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/app/server)
+    target_link_libraries(server_config_test PRIVATE engine_runtime ggml)
+    if (ENGINE_ENABLE_OPENMP)
+        target_link_libraries(server_config_test PRIVATE OpenMP::OpenMP_CXX)
+    endif()
+
+    add_test(
+        NAME server_config_test
+        COMMAND server_config_test
+    )
 endif()
 
 if (ENGINE_BUILD_EXAMPLES)
