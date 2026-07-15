@@ -257,6 +257,12 @@ add_library(engine_runtime STATIC
     src/models/omnivoice/assets.cpp
     src/models/omnivoice/tokenizer_text.cpp
     src/models/omnivoice/audio_tokenizer.cpp
+    src/models/outetts/assets.cpp
+    src/models/outetts/dac.cpp
+    src/models/outetts/llama.cpp
+    src/models/outetts/loader.cpp
+    src/models/outetts/session.cpp
+    src/models/outetts/tokenizer.cpp
     src/models/omnivoice/prompt_builder.cpp
     src/models/omnivoice/generator.cpp
     src/models/omnivoice/postprocess.cpp
