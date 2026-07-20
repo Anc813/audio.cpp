@@ -258,6 +258,12 @@ add_library(engine_runtime STATIC
     src/models/omnivoice/assets.cpp
     src/models/omnivoice/tokenizer_text.cpp
     src/models/omnivoice/audio_tokenizer.cpp
+    src/models/outetts/assets.cpp
+    src/models/outetts/dac.cpp
+    src/models/outetts/llama.cpp
+    src/models/outetts/loader.cpp
+    src/models/outetts/session.cpp
+    src/models/outetts/tokenizer.cpp
     src/models/omnivoice/prompt_builder.cpp
     src/models/omnivoice/generator.cpp
     src/models/omnivoice/postprocess.cpp
@@ -717,6 +723,7 @@ if (ENGINE_BUILD_WARMBENCH)
     add_engine_warmbench(moss_tts_local_warm_bench tests/moss_tts_local/moss_tts_local_warm_bench.cpp)
     add_engine_warmbench(nemotron_asr_warm_bench tests/nemotron_asr/nemotron_asr_warm_bench.cpp)
     add_engine_warmbench(omnivoice_warm_bench tests/omnivoice/omnivoice_warm_bench.cpp)
+    add_engine_warmbench(outetts_warm_bench tests/outetts/outetts_warm_bench.cpp)
     add_engine_warmbench(pocket_tts_warm_bench tests/pocket_tts/pocket_tts_warm_bench.cpp)
     add_engine_warmbench(qwen3_asr_warm_bench tests/qwen3_asr/qwen3_asr_warm_bench.cpp)
     add_engine_warmbench(qwen3_forced_aligner_warm_bench tests/qwen3_forced_aligner/qwen3_forced_aligner_warm_bench.cpp)
@@ -784,6 +791,14 @@ if (ENGINE_BUILD_TESTS)
     add_test(
         NAME audio_chunking_test
         COMMAND audio_chunking_test
+    )
+
+    add_engine_unittest(outetts_generation_budget_test tests/unittests/test_outetts_generation_budget.cpp)
+    target_include_directories(outetts_generation_budget_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests/unittests)
+
+    add_test(
+        NAME outetts_generation_budget_test
+        COMMAND outetts_generation_budget_test
     )
 
     add_engine_unittest(subtitle_formatter_test tests/unittests/test_subtitle_formatter.cpp)
