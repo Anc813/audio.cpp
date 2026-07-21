@@ -12,6 +12,20 @@
       nixpkgsFor = forAllSystems (system: import nixpkgs { 
         inherit system; 
       });
+      nixpkgsCudaFor = forAllSystems (system: import nixpkgs { 
+        inherit system; 
+        config.cudaSupport = true;
+        config.allowUnfreePredicate = p:
+          builtins.all (
+            license:
+            license.free
+            || builtins.elem license.shortName [
+              "CUDA EULA"
+              "cuDNN EULA"
+              "cuSPARSELt EULA"
+            ]
+          ) (p.meta.licenses or (nixpkgs.lib.toList (p.meta.license or [])));
+      });
     in
     {
       packages = forAllSystems (system:
@@ -93,7 +107,7 @@
           cpu = mkAudioCpp { pkgs = nixpkgsFor.${system}; cudaSupport = false; vulkanSupport = false; metalSupport = false; };
           vulkan = mkAudioCpp { pkgs = nixpkgsFor.${system}; vulkanSupport = true; cudaSupport = false; metalSupport = false; };
         } // pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
-          cuda = mkAudioCpp { pkgs = nixpkgsFor.${system}; cudaSupport = true; vulkanSupport = false; metalSupport = false; };
+          cuda = mkAudioCpp { pkgs = nixpkgsCudaFor.${system}; cudaSupport = true; vulkanSupport = false; metalSupport = false; };
         } // pkgs.lib.optionalAttrs pkgs.stdenv.isDarwin {
           metal = mkAudioCpp { pkgs = nixpkgsFor.${system}; metalSupport = true; cudaSupport = false; vulkanSupport = false; };
         } // {
@@ -108,7 +122,7 @@
             inputsFrom = [ self.packages.${system}.default ];
           };
         } // nixpkgsFor.${system}.lib.optionalAttrs nixpkgsFor.${system}.stdenv.isLinux {
-          cuda = nixpkgsFor.${system}.mkShell {
+          cuda = nixpkgsCudaFor.${system}.mkShell {
             inputsFrom = [ self.packages.${system}.cuda ];
           };
         }
