@@ -1,0 +1,115 @@
+name: windows-cuda-build
+
+on:
+  push:
+    branches:
+      - ci/**
+      - main
+      - dev
+      - release-0.2
+  pull_request:
+    branches:
+      - main
+      - dev
+      - release-0.2
+  workflow_dispatch:
+    inputs:
+      cuda_architectures:
+        description: "CMake CUDA architectures (default targets RTX 4070 / compute 8.9)"
+        required: false
+        default: "89-real"
+
+env:
+  # CUDA 12.x toolkit installed via conda. The NVIDIA .exe installer crashes on
+  # GitHub windows runners (Jimver/cuda-toolkit#388/#436), so we use the conda
+  # nvidia channel package instead.
+  CUDA_TOOLKIT_VERSION: "12.6.3"
+  CUDA_ARCHITECTURES: "89-real"
+
+jobs:
+  build:
+    name: Windows CUDA 12
+    runs-on: windows-2022
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check loader/catalog sync
+        shell: pwsh
+        run: |
+          python tools/check_loader_catalog_sync.py --self-test
+          python tools/check_loader_catalog_sync.py
+
+      - name: Set up Miniconda
+        uses: conda-incubator/setup-miniconda@v3
+        with:
+          auto-update-conda: true
+          activate-environment: cuda
+          python-version: "3.11"
+
+      - name: Install CUDA toolkit (conda)
+        shell: pwsh
+        run: |
+          conda install -n cuda -y -c nvidia "cuda-toolkit=$env:CUDA_TOOLKIT_VERSION"
+          $condaRoot = (conda info --base).Trim()
+          $cudaPath = Join-Path $condaRoot "envs\cuda\Library"
+          if (-not (Test-Path (Join-Path $cudaPath "bin\nvcc.exe"))) {
+            throw "nvcc.exe not found under $cudaPath after conda install"
+          }
+          "CUDA_PATH=$cudaPath" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "CUDAToolkit_ROOT=$cudaPath" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Report CUDA version
+        shell: pwsh
+        run: |
+          & "$env:CUDA_PATH\bin\nvcc.exe" --version
+
+      - name: Resolve CUDA architectures
+        shell: pwsh
+        run: |
+          $arch = "${{ github.event.inputs.cuda_architectures }}"
+          if ([string]::IsNullOrWhiteSpace($arch)) { $arch = $env:CUDA_ARCHITECTURES }
+          "CUDA_ARCHITECTURES=$arch" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host "Building for CUDA architectures: $arch"
+
+      - name: Build audiocpp_cli
+        shell: pwsh
+        run: |
+          .\scripts\build_windows.ps1 `
+            -Preset windows-cuda-release `
+            -CudaArchitectures $env:CUDA_ARCHITECTURES `
+            -Target audiocpp_cli
+
+      - name: Build audiocpp_server
+        shell: pwsh
+        run: |
+          .\scripts\build_windows.ps1 `
+            -Preset windows-cuda-release `
+            -CudaArchitectures $env:CUDA_ARCHITECTURES `
+            -Target audiocpp_server
+
+      - name: Build audiocpp_gguf
+        shell: pwsh
+        run: |
+          .\scripts\build_windows.ps1 `
+            -Preset windows-cuda-release `
+            -CudaArchitectures $env:CUDA_ARCHITECTURES `
+            -Target audiocpp_gguf
+
+      - name: Collect binaries
+        shell: pwsh
+        run: |
+          $out = "dist"
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+          Get-ChildItem -Path build -Recurse -Filter *.exe |
+            Where-Object { $_.Name -match "^audiocpp_" } |
+            ForEach-Object { Copy-Item $_.FullName -Destination $out -Force }
+          Get-ChildItem $out
+
+      - name: Upload CUDA binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: audiocpp-windows-cuda12
+          path: dist/*.exe
+          if-no-files-found: error
