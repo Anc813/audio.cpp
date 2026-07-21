@@ -20,6 +20,7 @@
     {
       packages = forAllSystems (system:
         let
+          pkgs = nixpkgsFreeFor.${system};
           # A function to build audio.cpp with any set of features
           mkAudioCpp = { pkgs, cudaSupport ? false, vulkanSupport ? false, metalSupport ? pkgs.stdenv.isDarwin }: 
             let
@@ -53,10 +54,7 @@
               ] ++ pkgs.lib.optionals cudaSupport [
                 pkgs.cudaPackages.cudatoolkit
               ] ++ pkgs.lib.optionals metalSupport [
-                darwin.apple_sdk.frameworks.Metal
-                darwin.apple_sdk.frameworks.Foundation
-                darwin.apple_sdk.frameworks.MetalPerformanceShaders
-                darwin.apple_sdk.frameworks.Accelerate
+                pkgs.apple-sdk_14
               ];
 
               cmakeFlags = [
@@ -98,9 +96,11 @@
           # Expose specific backend variants
           cpu = mkAudioCpp { pkgs = nixpkgsFreeFor.${system}; cudaSupport = false; vulkanSupport = false; metalSupport = false; };
           vulkan = mkAudioCpp { pkgs = nixpkgsFreeFor.${system}; vulkanSupport = true; cudaSupport = false; metalSupport = false; };
+        } // pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
           cuda = mkAudioCpp { pkgs = nixpkgsUnfreeFor.${system}; cudaSupport = true; vulkanSupport = false; metalSupport = false; };
+        } // pkgs.lib.optionalAttrs pkgs.stdenv.isDarwin {
           metal = mkAudioCpp { pkgs = nixpkgsFreeFor.${system}; metalSupport = true; cudaSupport = false; vulkanSupport = false; };
-
+        } // {
           # Automatically select best default for the current platform
           default = if nixpkgsFreeFor.${system}.stdenv.isDarwin then self.packages.${system}.metal else self.packages.${system}.vulkan;
         }
@@ -111,6 +111,7 @@
           default = nixpkgsFreeFor.${system}.mkShell {
             inputsFrom = [ self.packages.${system}.default ];
           };
+        } // nixpkgsFreeFor.${system}.lib.optionalAttrs nixpkgsFreeFor.${system}.stdenv.isLinux {
           cuda = nixpkgsUnfreeFor.${system}.mkShell {
             inputsFrom = [ self.packages.${system}.cuda ];
           };
