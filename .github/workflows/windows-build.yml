@@ -1,17 +1,8 @@
 name: windows-build
 
 on:
-  push:
-    branches:
-      - ci/**
-      - main
-      - dev
-      - release-0.2
-  pull_request:
-    branches:
-      - main
-      - dev
-      - release-0.2
+  # Auto-triggers disabled — only the Windows CUDA build runs automatically.
+  # Run manually from the Actions tab if needed.
   workflow_dispatch:
 
 jobs:

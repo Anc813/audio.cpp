@@ -11,10 +11,8 @@
 name: Build and publish Docker images
 
 on:
-  # Runs daily at 03:21 UTC
-  schedule:
-    - cron: '21 3 * * *'
-  # or when triggered manually
+  # Daily schedule disabled — only the Windows CUDA build runs automatically.
+  # Run manually from the Actions tab if needed.
   workflow_dispatch:
     inputs:
       force_build:
