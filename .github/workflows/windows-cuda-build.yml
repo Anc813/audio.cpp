@@ -73,12 +73,20 @@ jobs:
           "CUDA_ARCHITECTURES=$arch" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           Write-Host "Building for CUDA architectures: $arch"
 
+      # CpuArch avx2 = the "balance" profile from package_windows_prebuilt.ps1's
+      # own definitions: AVX2-class CPU kernels, no native/AVX512 tuning to the
+      # GitHub runner's specific CPU. Without this, the preset defaults to
+      # native (-march=native on the RUNNER), which can bake in instructions
+      # (e.g. AVX512) the target machine's CPU (Ryzen 5700X: Zen 3, AVX2-only,
+      # no AVX512) doesn't have, causing an illegal-instruction crash at
+      # startup instead of just being slower.
       - name: Build audiocpp_cli
         shell: pwsh
         run: |
           .\scripts\build_windows.ps1 `
             -Preset windows-cuda-release `
             -CudaArchitectures $env:CUDA_ARCHITECTURES `
+            -CpuArch avx2 `
             -Target audiocpp_cli
 
       - name: Build audiocpp_server
@@ -87,6 +95,7 @@ jobs:
           .\scripts\build_windows.ps1 `
             -Preset windows-cuda-release `
             -CudaArchitectures $env:CUDA_ARCHITECTURES `
+            -CpuArch avx2 `
             -Target audiocpp_server
 
       - name: Build audiocpp_gguf
@@ -95,6 +104,7 @@ jobs:
           .\scripts\build_windows.ps1 `
             -Preset windows-cuda-release `
             -CudaArchitectures $env:CUDA_ARCHITECTURES `
+            -CpuArch avx2 `
             -Target audiocpp_gguf
 
       - name: Collect binaries
