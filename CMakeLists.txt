@@ -1187,7 +1187,10 @@ if (ENGINE_ENABLE_OPENMP)
 endif()
 
 if (MSVC)
-    target_compile_options(engine_runtime PRIVATE /utf-8)
+    # Guard on CXX for the same reason as /openmp:experimental above: nvcc
+    # treats a bare /utf-8 as a second input file instead of forwarding it
+    # to the host compiler, which is fatal for engine_runtime's CUDA sources.
+    target_compile_options(engine_runtime PRIVATE $<$<COMPILE_LANGUAGE:CXX>:/utf-8>)
 endif()
 
 if (ENGINE_ENABLE_CUDA AND NOT ENGINE_ENABLE_HIP)
