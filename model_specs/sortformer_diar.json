@@ -1,5 +1,88 @@
 {
   "family": "sortformer_diar",
+  "display_name": "Sortformer Diarization",
+  "description": "NVIDIA Transformer-based end-to-end speaker diarization model trained primarily on English speech, predicting speaker labels directly from audio and resolving speaker ordering by arrival time for up to four speakers.",
+  "category": "speech_analysis",
+  "status": "supported",
+  "tasks": [
+    "diar"
+  ],
+  "modes": [
+    "offline"
+  ],
+  "languages": [
+    "en"
+  ],
+  "capabilities": {
+    "diar": [
+      "speaker_turns"
+    ]
+  },
+  "runtime": {
+    "tags": [
+      "gguf"
+    ]
+  },
+  "ui": {
+    "recommended_package": "sortformer_diar_4spk_v1_q8_0",
+    "tags": [
+      "Diar",
+      "GGUF"
+    ],
+    "docs": [
+      "docs/audio_tools.md",
+      "docs/gguf.md"
+    ]
+  },
+  "package_defaults": {
+    "download": {
+      "kind": "huggingface_snapshot",
+      "repo": "audio-cpp/audio.cpp-gguf",
+      "revision": "main",
+      "gated": false
+    }
+  },
+  "packages": [
+    {
+      "id": "sortformer_diar_4spk_v1_q8_0",
+      "display_name": "Sortformer Diar 4spk v1 Q8_0 GGUF",
+      "default": true,
+      "format": "gguf",
+      "precision": "q8_0",
+      "target_directory": "Sortformer-Diar-4spk-v1-GGUF",
+      "files": [
+        "Sortformer-Diar-4spk-v1-GGUF/sortformer-diar-4spk-v1-q8_0.gguf"
+      ],
+      "strip_prefix": "Sortformer-Diar-4spk-v1-GGUF"
+    },
+    {
+      "id": "sortformer_diar_4spk_v1_f16",
+      "display_name": "Sortformer Diar 4spk v1 F16 GGUF",
+      "format": "gguf",
+      "precision": "f16",
+      "target_directory": "Sortformer-Diar-4spk-v1-GGUF",
+      "files": [
+        "Sortformer-Diar-4spk-v1-GGUF/sortformer-diar-4spk-v1-f16.gguf"
+      ],
+      "strip_prefix": "Sortformer-Diar-4spk-v1-GGUF"
+    },
+    {
+      "id": "sortformer_diar_4spk_v1_safetensors",
+      "display_name": "Sortformer Diar 4spk v1 Safetensors",
+      "format": "safetensors",
+      "precision": "native",
+      "target_directory": "diar_sortformer_4spk-v1",
+      "files": [
+        "config.json",
+        "model.safetensors",
+        "processor_config.json"
+      ],
+      "download": {
+        "kind": "huggingface_snapshot",
+        "repo": "nvidia/diar_sortformer_4spk-v1"
+      }
+    }
+  ],
   "sources": [
     {
       "format": "gguf",

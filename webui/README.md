@@ -11,6 +11,15 @@ The launch scripts can be **double-clicked** or invoked from a command line / Po
 | `webui/run_webui.sh` | Linux / macOS WebUI launcher | `./webui/run_webui.sh` |
 | `webui/_env.bat` | WebUI environment detection (**do not run directly**) | `call`ed by `run_webui.bat` |
 
+## Windows
+
+From the repository root, create a Python environment, install the WebUI dependencies, then launch the WebUI:
+
+```bat
+python -m venv venv && .\venv\Scripts\python.exe -m pip install -r webui\requirements.txt
+webui\run_webui.bat                REM UI -> http://127.0.0.1:7860
+```
+
 ## Linux / macOS
 
 On Linux / macOS, use `webui/run_webui.sh`:
@@ -23,11 +32,12 @@ python3 -m venv venv && ./venv/bin/pip install -r webui/requirements.txt
 - The Python interpreter is probed in order: `$AUDIOCPP_PYTHON`, `venv/bin/python`, `.venv/bin/python`,
   `webui/venv/bin/python`, `webui/.venv/bin/python`, `python3`, `python`.
 - The backend (cuda/cpu) is auto-detected: Windows checks `nvcuda.dll`, other platforms check `nvidia-smi`,
-  then confirms that the matching server build exists; override with `AUDIOCPP_BACKEND=gpu|cpu`.
-- The binaries can come from a portable bundle's `gpu/` or `cpu/` directories, or from a source build's
-  `build/<os>-<backend>-<type>/bin` (such as `build/linux-cuda-release/bin`).
+  then confirms that the matching server build exists; override with `AUDIOCPP_BACKEND=gpu|cpu|metal`.
+- The binaries can come from a portable bundle's `gpu/`, `metal/`, or `cpu/` directories, or from a source build's
+  `build/<os>-<backend>-<type>/bin` (such as `build/linux-cuda-release/bin` or `build/macos-metal-release/bin`).
   A plain `cmake -B build` producing `build/bin` is also recognized — when the directory name carries no
-  backend information, the backend is inferred from `GGML_CUDA` in `CMakeCache.txt`.
+  backend information, the backend is inferred from `ENGINE_ENABLE_METAL`, `GGML_METAL`, or `GGML_CUDA` in
+  `CMakeCache.txt`.
 - The Windows-only packages in `webui/requirements.txt` (pywin32, plus the pythonnet/pywebview used by
   SpeakType) are marked with `sys_platform`, so they install cleanly on Linux too.
 
@@ -65,9 +75,10 @@ To hand control back to the environment variable, just delete `webui/configs/ui_
   write those by hand.
   Currently installed ids: `qwen3-tts`, `qwen3-asr`, `vibevoice`, `omnivoice`, `pocket-tts`.
   An uninstalled id shows "not installed"; you can download it in the WebUI, or install it with
-  `python tools/model_manager.py install <download_id>` (see `models_catalog.json`).
+  `python webui/model_manager_webui.py install <download_id>` (the package comes from `model_specs/`).
 - **Automatic backend selection:** if CUDA (an NVIDIA driver) is detected, GPU is used; otherwise it falls back
-  to CPU. To force a backend, set `AUDIOCPP_BACKEND=gpu` (= cuda) or `AUDIOCPP_BACKEND=cpu`.
+  to CPU. To force a backend, set `AUDIOCPP_BACKEND=gpu` (= cuda), `AUDIOCPP_BACKEND=cpu`, or
+  `AUDIOCPP_BACKEND=metal`.
   The CLI, server, and WebUI all follow this detection (a machine without an NVIDIA GPU automatically drops to
   the CPU build, which is slower and impractical for some large models).
 - **Path base:** relative paths inside the scripts (such as `voice\demo_01_man.wav`, `output\xxx.wav`) are all
@@ -100,7 +111,22 @@ Starts the Gradio web interface (`webui.py`); open **http://127.0.0.1:7860** in 
   "load" / "generate" in the UI, the WebUI automatically starts/switches the underlying `audiocpp_server`
   (one model in VRAM at a time; switching models restarts it).
 - The UI lets you upload a reference voice, download uninstalled models, enter an HF token / proxy, and so on.
-- Backend is auto-detected (as above: GPU if CUDA is present, otherwise CPU); `AUDIOCPP_BACKEND=gpu|cpu` forces it.
+- **"⬇️ Download" asks before it downloads.** It does not start anything: it reports what the download will cost —
+  size (read live from the Hugging Face repo listing, so it never goes stale), free space on `models/`, the
+  estimated VRAM, and any warnings — then shows **✅ Confirm download** / **✖️ Cancel**. Nothing is fetched until
+  you confirm, and changing the selected model withdraws the prompt. "📊 Progress" shows the same figures for a
+  model that has not been downloaded yet, if you want to check without arming anything.
+  The VRAM estimate is reported on the CPU backend too (labelled as such — the CPU backend runs in system RAM);
+  only the low-VRAM *warning* stays CPU-quiet, since there is no VRAM to fall short of. A download the `models/`
+  volume cannot hold is refused outright — no Confirm button is offered — and a fit that leaves under 20 GB free is
+  flagged but still allowed.
+  Sizes are unavailable for gated repos without a token; those download as before.
+- **While it runs**, progress is shown against the package total ("Downloaded 5.00 GB of 17.00 GB (29%)"), and the
+  low-VRAM and low-disk warnings are repeated on every refresh rather than scrolling away after the first one.
+  Disk is judged against the bytes still to fetch, so a healthy download does not drift into a false alarm as free
+  space drops. The VRAM warning stays on screen after the download finishes — it decides whether the model can be
+  run at all, not whether it can be fetched.
+- Backend is auto-detected (as above: GPU if CUDA is present, otherwise CPU); `AUDIOCPP_BACKEND=gpu|cpu|metal` forces it.
   In CPU mode, the ggml thread count is set automatically from the **physical** core count — SMT/Hyper-Threading
   siblings are not counted, and one core is left free above 4 — so a long run leaves the rest of the machine
   usable. Filling every logical CPU is faster (~1.4x in a short CPU TTS run on an 8-core/16-thread 5800H); set
@@ -221,7 +247,11 @@ An empty `route` follows the task default (a vc entry → `v2_vc`, an svc entry 
 `v1_xlsr_hift_vc` are the older v1 routes; `v1_svc` only pairs with an svc entry. `intelligibility_cfg_rate` /
 `similarity_cfg_rate` are v2-only, `inference_cfg_rate` is v1-only.
 
-**Vevo2 (voice conversion):** defaults to `route=style_preserved_vc` (preserves the source speech's speaking style,
+**Vevo2 (voice conversion):** the three Vevo2 entries install the self-contained Q8_0 GGUF package
+(`vevo2_gguf` → `models/Vevo2-GGUF`, ~3.2 GB), which needs no sibling `whisper-medium` download. An earlier
+safetensors install in `models/Vevo2` is no longer what these entries point at; it still works from the CLI with
+`--model models/Vevo2`. The WebUI download installs the GGUF package instead.
+Vevo2 defaults to `route=style_preserved_vc` (preserves the source speech's speaking style,
 changing only the voice). An empty `route` follows the entry's task default (vc → style_preserved_vc, svc →
 style_preserved_svc, s2s → editing) and must match the selected entry's task; `style_converted_*` / `editing` need
 `style_ref` (a server-local wav path) / `style_ref_text` / `target_text` added in the "Other parameters (JSON)" box.
@@ -247,6 +277,7 @@ and a reference voice longer than ~10s is auto-truncated (an 8G VRAM limit).
 - **Audio analysis (VAD/separation/alignment):** WAV input is auto-converted to 16 kHz mono before going to the model,
   and result timelines are computed at 16 kHz. Qwen3 forced alignment caps a single audio at ~115 seconds.
 - **Source separation:** HTDemucs outputs four tracks — drums/bass/other/vocals (long audio takes a while);
+  BS-RoFormer outputs vocals + accompaniment;
   Mel-Band RoFormer outputs a vocals track + an accompaniment track (mixture − vocals).
 - **IndexTTS2** (new in 0.3): Chinese/English voice cloning; a reference voice is **required**. Emotion control is in the
   advanced parameters: `emotion_text` holds an emotion description (setting it auto-enables `use_emotion_text`) +
@@ -262,26 +293,15 @@ and a reference voice longer than ~10s is auto-truncated (an 8G VRAM limit).
   in the advanced parameters, choose `voice` (M1-M5 male / F1-F5 female) and `speaking_rate`; reference-audio cloning is not supported.
 - **Model downloads** run in the background with auto-refreshing progress; you can also click "📊 Download progress" to check manually.
 
-### GGUF conversion, inspection, and loading
+### GGUF inspection and loading
 
-Every task page's "Model management" card offers the same set of GGUF operations: pick a type (default `q8_0`) then click
-"🧊 Convert GGUF", which writes the result as `model.gguf` in the selected model's directory; an existing file is not
-overwritten. Clicking "🔎 Inspect GGUF" runs `audiocpp_gguf.exe --inspect` and shows the package metadata on the page.
-For models with native GGUF support, when a `model.gguf` exists in the directory, a normal "📥 Load model" automatically
-prefers the GGUF; clicking "🗑️ Delete GGUF" removes that file (and any leftover `.tmp` of the same name), and the next
-normal load restores the original weights.
-
-- The converter looks in order for the dev builds' `build\windows-cuda-release\bin` / `build\windows-cpu-release\bin`, and
-  the bundle's `audiocpp-portable\gpu` / `audiocpp-portable\cpu`; you can also point `AUDIOCPP_GGUF` at a custom `audiocpp_gguf.exe`.
-- The page only marks a model as "convertible" when it has native GGUF model-spec support and the conversion inputs can be
-  unambiguously assembled; the presence of `.safetensors` does not mean the matching C++ backend supports GGUF. A model
-  that supports conversion but isn't fully installed shows "convertible, but model not fully installed" up front, to help
-  you decide before downloading; Stable Audio currently still uses original weights and is not marked convertible.
-- The page automatically handles a supported single `model.safetensors`, sharded indexes, and Qwen3-TTS composite weights.
-  Other composite models that need multiple named `--input namespace=...` should still use the command line, to avoid the
-  UI guessing the wrong weight namespace.
-- Only audio.cpp-native GGUF can be loaded; quantization compatibility varies by model and inference route. Even a
-  successful conversion should be checked with a short sample first.
+Every task page's "Model management" card can inspect the selected GGUF package. Clicking "🔎 Inspect GGUF" runs
+`audiocpp_gguf.exe --inspect` and shows the package metadata on the page.
+For models with native GGUF support, a normal "📥 Load model" automatically prefers the GGUF in the model directory —
+`model.gguf` if it is there, otherwise the single `*.gguf` in the directory, so a downloaded package keeps its release
+name (`vevo2-q8_0.gguf`). A directory holding several GGUFs and no `model.gguf` is ambiguous and neither the page nor the
+server picks one. The WebUI no longer converts safetensors; downloads install the default GGUF package declared in
+`model_specs/`. Already-installed legacy/safetensors model directories can still be loaded from the catalog path.
 
 ---
 
@@ -305,7 +325,7 @@ Common ones:
 | `supertonic` | supertonic | tts | Supertonic 3 (preset voices, no Chinese) |
 
 An uninstalled id prompts at runtime; you can click "download" in the WebUI, or run
-`python tools\model_manager.py install <download_id> --models-root <bundle>\models`.
+`python webui\model_manager_webui.py install <download_id> --models-root <bundle>\models`.
 
 ---
 
@@ -313,7 +333,7 @@ An uninstalled id prompts at runtime; you can click "download" in the WebUI, or 
 
 | Variable | Purpose | Applies to |
 |---|---|---|
-| `AUDIOCPP_BACKEND` | `gpu`(=cuda) / `cpu` to force the backend | cli / server / webui |
+| `AUDIOCPP_BACKEND` | `gpu`(=cuda) / `cpu` / `metal` to force the backend | cli / server / webui |
 | `AUDIOCPP_HOST` | server bind address (`0.0.0.0` opens it to the LAN) | server |
 | `AUDIOCPP_BUNDLE` | manually specify the bundle root directory | all |
 | `AUDIOCPP_SERVER` | make the WebUI connect to an already-running external server | webui |

@@ -1,5 +1,72 @@
 {
   "family": "heartmula",
+  "display_name": "HeartMuLa",
+  "description": "Open-source music foundation model for generating complete songs from text, lyric prompts, and style tags, with controllable song structure and broad multilingual lyric conditioning.",
+  "category": "audio_generation",
+  "status": "supported",
+  "tasks": [
+    "music"
+  ],
+  "modes": [
+    "offline"
+  ],
+  "languages": [
+    "multilingual"
+  ],
+  "capabilities": {
+    "music": [
+      "lyrics"
+    ]
+  },
+  "runtime": {
+    "tags": [
+      "gguf"
+    ]
+  },
+  "ui": {
+    "recommended_package": "heartmula_q8_0",
+    "tags": [
+      "Music",
+      "GGUF"
+    ],
+    "docs": [
+      "docs/tts.md",
+      "docs/gguf.md"
+    ]
+  },
+  "package_defaults": {
+    "download": {
+      "kind": "huggingface_snapshot",
+      "repo": "audio-cpp/audio.cpp-gguf",
+      "revision": "main",
+      "gated": false
+    }
+  },
+  "packages": [
+    {
+      "id": "heartmula_q8_0",
+      "display_name": "HeartMuLa Q8_0 GGUF",
+      "default": true,
+      "format": "gguf",
+      "precision": "q8_0",
+      "target_directory": "HeartMuLa-GGUF",
+      "files": [
+        "HeartMuLa-GGUF/heartmula-q8_0.gguf"
+      ],
+      "strip_prefix": "HeartMuLa-GGUF"
+    },
+    {
+      "id": "heartmula_f16",
+      "display_name": "HeartMuLa F16 GGUF",
+      "format": "gguf",
+      "precision": "f16",
+      "target_directory": "HeartMuLa-GGUF",
+      "files": [
+        "HeartMuLa-GGUF/heartmula-f16.gguf"
+      ],
+      "strip_prefix": "HeartMuLa-GGUF"
+    }
+  ],
   "sources": [
     {
       "format": "gguf",

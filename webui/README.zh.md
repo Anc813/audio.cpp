@@ -12,6 +12,15 @@
 | `webui/run_webui.sh` | Linux / macOS WebUI 启动脚本 | `./webui/run_webui.sh` |
 | `webui/_env.bat` | WebUI 环境探测（**不直接运行**） | 被 `run_webui.bat` `call` |
 
+## Windows
+
+在仓库根目录创建 Python 环境、安装 WebUI 依赖，然后启动 WebUI：
+
+```bat
+python -m venv venv && .\venv\Scripts\python.exe -m pip install -r webui\requirements.txt
+webui\run_webui.bat                REM UI -> http://127.0.0.1:7860
+```
+
 ## Linux / macOS
 
 在 Linux / macOS 上用 `webui/run_webui.sh`：
@@ -24,11 +33,11 @@ python3 -m venv venv && ./venv/bin/pip install -r webui/requirements.txt
 - Python 解释器依次探测 `$AUDIOCPP_PYTHON`、`venv/bin/python`、`.venv/bin/python`、
   `webui/venv/bin/python`、`webui/.venv/bin/python`、`python3`、`python`。
 - 后端（cuda/cpu）自动探测：Windows 看 `nvcuda.dll`，其它平台看 `nvidia-smi`，
-  再确认对应的 server 构建存在；用 `AUDIOCPP_BACKEND=gpu|cpu` 覆盖。
-- 二进制既支持 portable 包的 `gpu/`、`cpu/` 目录，也支持从源码构建的
-  `build/<os>-<backend>-<type>/bin`（如 `build/linux-cuda-release/bin`）。
+  再确认对应的 server 构建存在；用 `AUDIOCPP_BACKEND=gpu|cpu|metal` 覆盖。
+- 二进制既支持 portable 包的 `gpu/`、`metal/`、`cpu/` 目录，也支持从源码构建的
+  `build/<os>-<backend>-<type>/bin`（如 `build/linux-cuda-release/bin` 或 `build/macos-metal-release/bin`）。
   直接 `cmake -B build` 产生的 `build/bin` 也能识别——目录名不含后端信息时，
-  从 `CMakeCache.txt` 的 `GGML_CUDA` 判断。
+  从 `CMakeCache.txt` 的 `ENGINE_ENABLE_METAL`、`GGML_METAL` 或 `GGML_CUDA` 判断。
 - `webui/requirements.txt` 里 Windows 专用的包（pywin32 及 SpeakType 用到的
   pythonnet/pywebview）带 `sys_platform` 标记，因此在 Linux 上也能直接安装。
 
@@ -60,9 +69,10 @@ python3 -m venv venv && ./venv/bin/pip install -r webui/requirements.txt
   里的 **id** 来指定模型，并自动查出它的 `family` / `task` / 绝对路径，你不用再手写这些。
   当前已安装的 id：`qwen3-tts`、`qwen3-asr`、`vibevoice`、`omnivoice`、`pocket-tts`。
   未安装的 id 会提示 “not installed”，可在 WebUI 里下载，或用
-  `python tools/model_manager.py install <download_id>` 安装（见 `models_catalog.json`）。
+  `python webui/model_manager_webui.py install <download_id>` 安装（包信息来自 `model_specs/`）。
 - **后端自动选择：** 检测到 CUDA（NVIDIA 驱动）就用 GPU，否则回退 CPU。
-  想强制某个后端，设环境变量 `AUDIOCPP_BACKEND=gpu`（=cuda）或 `AUDIOCPP_BACKEND=cpu`。
+  想强制某个后端，设环境变量 `AUDIOCPP_BACKEND=gpu`（=cuda）、`AUDIOCPP_BACKEND=cpu` 或
+  `AUDIOCPP_BACKEND=metal`。
   CLI、server、WebUI 都遵循这一检测（无 N 卡的机器自动落到 CPU 版，速度较慢、部分大模型不实用）。
 - **路径基准：** 脚本内相对路径（如 `voice\demo_01_man.wav`、`output\xxx.wav`）都相对 `webui\` 目录。
 - **可执行文件来源：** 自动定位整合包 `..\audiocpp-portable`（内含 `cpu\ gpu\ models\`），
@@ -91,7 +101,17 @@ python3 -m venv venv && ./venv/bin/pip install -r webui/requirements.txt
 - **按需加载**：不需要先手动启动 `audiocpp_server`——在界面里选模型点“加载”/“生成”时，WebUI 会自动
   起/切换底层的 `audiocpp_server`（一次一个模型在显存里，换模型即重启）。
 - 界面里可上传参考音色、下载未安装的模型、填 HF token / 代理等。
-- 后端自动检测（同上：有 CUDA 用 GPU，否则 CPU）；`AUDIOCPP_BACKEND=gpu|cpu` 可强制。
+- **「⬇️ 下载模型」会先问再下**：点它不会直接开始下载，而是先说明代价——下载体积（实时读 Hugging Face
+  仓库文件列表，不会过期）、`models/` 剩余空间、估算显存，以及各项警告，然后显示 **✅ 确认下载** /
+  **✖️ 取消** 两个按钮。不点确认就不会下载任何东西；切换所选模型会自动收起确认按钮。对尚未下载的模型点
+  「📊 下载进度」也会显示同样的信息，方便只看不下。显存估算在 CPU 后端下同样显示（并标注 CPU 后端跑在
+  系统内存里）；只有“显存不足”**警告**在 CPU 模式下保持静默，因为没有显存可谈。`models/` 所在分区装不
+  下时直接拒绝（不给出确认按钮）；装得下但下完剩余不足 20 GB 会提醒，但仍允许下载。未提供 token 的受限
+  仓库无法取得体积，这类下载行为与以前一致。
+- **下载过程中**进度按整包体积显示（如「已下载 5.00 GB / 17.00 GB（29%）」），显存不足与磁盘不足的提醒
+  每次刷新都会重新显示，不会只闪一下就被进度覆盖。磁盘判断按**剩余待下载**的字节数计算，因此正常下载
+  不会随着可用空间减少而误报。下载完成后显存提醒仍然保留——它决定模型能不能跑，而不是能不能下完。
+- 后端自动检测（同上：有 CUDA 用 GPU，否则 CPU）；`AUDIOCPP_BACKEND=gpu|cpu|metal` 可强制。
   CPU 模式下 ggml 线程数按**物理核数**自动设置（不计超线程的逻辑核，物理核多于 4 时再留一个核给系统），
   这样长任务跑起来机器仍然可用。把逻辑核占满会更快（8 核 16 线程的 5800H 上，一次短文本 CPU TTS 快约 1.4 倍），
   想要这个速度就设 `AUDIOCPP_THREADS=N`。CPU 模式下不显示显存警告。
@@ -190,7 +210,10 @@ TTS 标签页「合成设置 → 高级参数」里的控件由 **`configs/model
 `v1_svc` 只能配 svc 条目。`intelligibility_cfg_rate` / `similarity_cfg_rate` 仅 v2 生效，
 `inference_cfg_rate` 仅 v1 生效。
 
-**Vevo2（语音转换）**：默认 `route=style_preserved_vc`（保留源语音的说话风格，只换音色）。
+**Vevo2（语音转换）**：三个 Vevo2 条目改为下载自包含的 Q8_0 GGUF 包（`vevo2_gguf` → `models/Vevo2-GGUF`，
+约 3.2 GB），不再需要额外下载同级的 `whisper-medium`。此前装在 `models/Vevo2` 的 safetensors 版本不再是这些
+条目指向的目录；它仍可用 CLI `--model models/Vevo2` 加载。WebUI 下载会安装 GGUF 包。
+Vevo2 默认 `route=style_preserved_vc`（保留源语音的说话风格，只换音色）。
 `route` 留空按条目任务默认（vc→style_preserved_vc，svc→style_preserved_svc，s2s→editing），
 且须与所选条目任务匹配；`style_converted_*` / `editing` 需在「其它参数(JSON)」里补
 `style_ref`（服务器本地 wav 路径）/ `style_ref_text` / `target_text`。
@@ -214,7 +237,7 @@ singing 路线默认开，style_converted_vc / editing 默认关。
 - **音频分析（VAD/分离/对齐）**：WAV 输入自动转 16 kHz 单声道后送模型，结果时间轴按 16 kHz 换算。
   Qwen3 强制对齐单次音频上限约 115 秒。
 - **音源分离**：HTDemucs 输出 drums/bass/other/vocals 四轨（长音频耗时较长）；
-  Mel-Band RoFormer 输出人声轨 + 伴奏轨（mixture − vocals）。
+  BS-RoFormer 和 Mel-Band RoFormer 输出人声轨 + 伴奏轨（mixture − vocals）。
 - **IndexTTS2**（0.3 新增）：中/英声音克隆，**必须**提供参考音色。情感控制在高级参数：
   `emotion_text` 填情感描述（填了会自动开启 `use_emotion_text`）+ `emotion_alpha` 调强度；
   或勾 `use_emotion_text` 从朗读文本自动推断；`emotion_vector`（8 个浮点）走 JSON 兜底框。
@@ -227,22 +250,14 @@ singing 路线默认开，style_converted_vc / editing 默认关。
   高级参数选 `voice`（M1-M5 男 / F1-F5 女）和 `speaking_rate`；不支持参考音频克隆。
 - **模型下载**在后台进行，进度自动刷新，也可点「📊 下载进度」手动查看。
 
-### GGUF 转换、检查与加载
+### GGUF 检查与加载
 
-每个任务页的「模型管理」卡片都提供同一组 GGUF 操作：选择类型（默认 `q8_0`）后点「🧊 转换 GGUF」，
-会把结果写为所选模型目录下的 `model.gguf`；已有文件不会被覆盖。点「🔎 检查 GGUF」会在页面上执行
-`audiocpp_gguf.exe --inspect` 并显示包的元数据。对已接入原生 GGUF 的模型，目录存在 `model.gguf` 时，普通
-「📥 加载模型」会自动优先使用 GGUF；点「🗑️ 删除 GGUF」会删除该文件（以及同名残留 `.tmp`），下次普通加载
-即恢复原始权重。
-
-- 转换器按顺序查找开发构建的 `build\windows-cuda-release\bin` / `build\windows-cpu-release\bin`，以及整合包的
-  `audiocpp-portable\gpu` / `audiocpp-portable\cpu`；也可用 `AUDIOCPP_GGUF` 指向自定义 `audiocpp_gguf.exe`。
-- 页面只会把已接入原生 GGUF 模型规格、且能明确整理转换输入的模型标为「可转换」；存在 `.safetensors` 不代表对应
-  C++ 后端已支持 GGUF。支持转换但尚未完整安装的模型会提前显示「可转换，但模型未完整安装」，便于下载前判断；
-  Stable Audio 当前仍使用原始权重，不会标为可转换。
-- 页面自动处理受支持的单个 `model.safetensors`、分片索引和 Qwen3-TTS 复合权重。其他需要多个命名
-  `--input namespace=...` 的复合模型仍应使用命令行，避免 UI 猜错权重命名空间。
-- 仅 audio.cpp-native GGUF 可加载；量化兼容性因模型和推理路线而异。转换成功也应先用短样本检查输出质量。
+每个任务页的「模型管理」卡片都可以检查所选 GGUF 包。点「🔎 检查 GGUF」会在页面上执行
+`audiocpp_gguf.exe --inspect` 并显示包的元数据。对已接入原生 GGUF 的模型，普通「📥 加载模型」会自动优先
+使用模型目录里的 GGUF：优先 `model.gguf`，否则取目录里唯一的 `*.gguf`，因此下载的模型包可以保留其发布名
+（如 `vevo2-q8_0.gguf`）而无需改名；目录里有多个 GGUF 且没有 `model.gguf` 时无法判定，页面与 server 都不会
+擅自选一个。WebUI 不再转换 safetensors；下载会安装 `model_specs/` 声明的默认 GGUF 包。已经存在的
+legacy/safetensors 模型目录仍可按 catalog 路径加载。
 
 ---
 
@@ -266,7 +281,7 @@ singing 路线默认开，style_converted_vc / editing 默认关。
 | `supertonic` | supertonic | tts | Supertonic 3（预置音色，无中文） |
 
 未安装的 id 运行时会提示，可在 WebUI 里点“下载”，或
-`python tools\model_manager.py install <download_id> --models-root <bundle>\models`。
+`python webui\model_manager_webui.py install <download_id> --models-root <bundle>\models`。
 
 ---
 
@@ -274,7 +289,7 @@ singing 路线默认开，style_converted_vc / editing 默认关。
 
 | 变量 | 作用 | 适用 |
 |---|---|---|
-| `AUDIOCPP_BACKEND` | `gpu`(=cuda) / `cpu` 强制后端 | cli / server / webui |
+| `AUDIOCPP_BACKEND` | `gpu`(=cuda) / `cpu` / `metal` 强制后端 | cli / server / webui |
 | `AUDIOCPP_HOST` | server 绑定地址（`0.0.0.0` 开放局域网） | server |
 | `AUDIOCPP_BUNDLE` | 手动指定整合包根目录 | 全部 |
 | `AUDIOCPP_SERVER` | 让 WebUI 连一个已在跑的外部 server | webui |

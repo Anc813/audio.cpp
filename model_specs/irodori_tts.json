@@ -1,5 +1,101 @@
 {
   "family": "irodori_tts",
+  "display_name": "Irodori-TTS",
+  "description": "Japanese TTS model based on RF-DiT continuous audio latents, supporting zero-shot voice cloning, automatic duration prediction, multimodal voice design, and emoji-style control.",
+  "category": "tts",
+  "status": "supported",
+  "tasks": [
+    "tts",
+    "clone",
+    "design"
+  ],
+  "modes": [
+    "offline"
+  ],
+  "languages": [
+    "ja"
+  ],
+  "capabilities": {
+    "clone": [
+      "speaker_reference"
+    ],
+    "design": [
+      "voice_design"
+    ]
+  },
+  "runtime": {
+    "tags": [
+      "gguf"
+    ]
+  },
+  "ui": {
+    "recommended_package": "irodori_tts_600m_v3_voicedesign_q8_0",
+    "tags": [
+      "TTS",
+      "Clone",
+      "Design",
+      "GGUF"
+    ],
+    "docs": [
+      "docs/tts.md",
+      "docs/gguf.md"
+    ]
+  },
+  "package_defaults": {
+    "download": {
+      "kind": "huggingface_snapshot",
+      "repo": "audio-cpp/audio.cpp-gguf",
+      "revision": "main",
+      "gated": false
+    }
+  },
+  "packages": [
+    {
+      "id": "irodori_tts_600m_v3_voicedesign_q8_0",
+      "display_name": "Irodori-TTS 600M v3 VoiceDesign Q8_0 GGUF",
+      "default": true,
+      "format": "gguf",
+      "precision": "q8_0",
+      "target_directory": "Irodori-TTS-600M-v3-VoiceDesign-GGUF",
+      "files": [
+        "Irodori-TTS-600M-v3-VoiceDesign-GGUF/irodori-tts-600m-v3-voicedesign-q8_0.gguf"
+      ],
+      "strip_prefix": "Irodori-TTS-600M-v3-VoiceDesign-GGUF"
+    },
+    {
+      "id": "irodori_tts_600m_v3_voicedesign_f16",
+      "display_name": "Irodori-TTS 600M v3 VoiceDesign F16 GGUF",
+      "format": "gguf",
+      "precision": "f16",
+      "target_directory": "Irodori-TTS-600M-v3-VoiceDesign-GGUF",
+      "files": [
+        "Irodori-TTS-600M-v3-VoiceDesign-GGUF/irodori-tts-600m-v3-voicedesign-f16.gguf"
+      ],
+      "strip_prefix": "Irodori-TTS-600M-v3-VoiceDesign-GGUF"
+    },
+    {
+      "id": "irodori_tts_500m_v3_q8_0",
+      "display_name": "Irodori-TTS 500M v3 Q8_0 GGUF",
+      "format": "gguf",
+      "precision": "q8_0",
+      "target_directory": "Irodori-TTS-500M-v3-GGUF",
+      "files": [
+        "Irodori-TTS-500M-v3-GGUF/irodori-tts-500m-v3-q8_0.gguf"
+      ],
+      "strip_prefix": "Irodori-TTS-500M-v3-GGUF"
+    },
+    {
+      "id": "irodori_tts_500m_v3_f16",
+      "display_name": "Irodori-TTS 500M v3 F16 GGUF",
+      "format": "gguf",
+      "precision": "f16",
+      "target_directory": "Irodori-TTS-500M-v3-GGUF",
+      "files": [
+        "Irodori-TTS-500M-v3-GGUF/irodori-tts-500m-v3-f16.gguf"
+      ],
+      "strip_prefix": "Irodori-TTS-500M-v3-GGUF"
+    }
+  ],
   "sources": [
     {
       "format": "gguf",

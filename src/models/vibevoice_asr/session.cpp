@@ -968,10 +968,12 @@ runtime::TaskResult VibeVoiceASRSession::run_single(const VibeVoiceASRRequest & 
         runtime::SpeechSegment speech_segment;
         speech_segment.span.start_sample = static_cast<int64_t>(segment.start_time * audio.sample_rate);
         speech_segment.span.end_sample = static_cast<int64_t>(segment.end_time * audio.sample_rate);
+        speech_segment.text = segment.text;
         result.speech_segments.push_back(speech_segment);
         runtime::SpeakerTurn turn;
         turn.span = speech_segment.span;
         turn.speaker_id = segment.speaker_id;
+        turn.text = segment.text;
         result.speaker_turns.push_back(std::move(turn));
     }
 

@@ -1,6 +1,8 @@
 #include "args.h"
 #include "batch.h"
+#include "partial_render.h"
 #include "request.h"
+#include "../streaming/pcm_source.h"
 #include "../streaming/streaming.h"
 #include "../workflow/execution.h"
 #include "../workflow/file_sink.h"
@@ -17,6 +19,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <cstdio>
 #include <fstream>
 #include <filesystem>
 #include <iostream>
@@ -31,7 +34,10 @@
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
+#include <io.h>
 #include <windows.h>
+#else
+#include <unistd.h>
 #endif
 
 #ifdef _OPENMP
@@ -47,7 +53,7 @@ void print_task_list_help() {
         << "    --task vad|asr|diar|sep|gen|tts|clon|vc|s2s|align|vdes|spk|svc\n"
         << "    --family <name>\n"
         << "    --model <path>\n"
-        << "    --backend cpu|cuda|vulkan|metal|best\n"
+        << "    --backend cpu|cuda|hip|rocm|vulkan|metal|best  (rocm is an alias for hip)\n"
         << "    --mode offline|streaming  default offline\n"
         << "    --device <n>\n"
         << "    --threads <n>  Backend and OpenMP worker threads, default 4\n"
@@ -113,7 +119,10 @@ void print_task_list_help() {
         << "    --text-chunk-size <chars>\n"
         << "    --text-chunk-mode default|tag_aware|japanese|endline\n"
         << "  Inputs:\n"
-        << "    --audio <wav>\n"
+        << "    --audio <wav>  Use - to stream raw PCM from stdin (requires --mode streaming)\n"
+        << "    --input-format s16le|f32le  Raw PCM sample format for --audio -, default s16le\n"
+        << "    --input-rate <hz>  Raw PCM sample rate for --audio -, default 16000\n"
+        << "    --input-channels <n>  Raw PCM channel count for --audio -, default 1\n"
         << "    --text <text>\n"
         << "    --max-text-length <chars>  Maximum input text length for models that enforce it\n"
         << "    --language <code>\n"
@@ -452,6 +461,49 @@ void write_vad_chunks_output(
     std::cout << "vad_chunks_out=" << path.string() << "\n";
 }
 
+bool stream_audio_from_stdin(int argc, char ** argv) {
+    const auto audio = minitts::cli::find_arg(argc, argv, "--audio");
+    return audio.has_value() && minitts::cli::is_stdin_audio_source(*audio);
+}
+
+// Only a terminal can take partials as running text; a redirected stream has to keep the
+// line-per-update format so pipes and logs stay parseable.
+bool stdout_is_terminal() {
+#ifdef _WIN32
+    return _isatty(_fileno(stdout)) != 0;
+#else
+    return isatty(fileno(stdout)) != 0;
+#endif
+}
+
+// Feeds raw PCM from stdin into the session chunk by chunk, so nothing has to be buffered up
+// front and transcription tracks the input as it arrives.
+engine::runtime::TaskResult run_streaming_from_stdin(
+    int argc,
+    char ** argv,
+    engine::runtime::IStreamingVoiceTaskSession & streaming,
+    const engine::runtime::TaskRequest & request,
+    const minitts::app::StreamEventSink & sink) {
+    // build_request_from_cli fills audio_input with the declared format and no samples, which is
+    // also what prepare() consumes as its audio contract.
+    if (!request.audio_input.has_value()) {
+        throw std::runtime_error("streaming from stdin requires an audio format contract");
+    }
+    const auto sample_format = minitts::app::parse_pcm_sample_format(
+        minitts::cli::find_arg(argc, argv, "--input-format").value_or("s16le"));
+    const minitts::app::AudioStreamFormat format{
+        request.audio_input->sample_rate,
+        request.audio_input->channels,
+    };
+    // A headerless stream cannot be checked against a header, so report how it was interpreted.
+    std::cout << "audio_input=stdin format=" << minitts::app::to_string(sample_format)
+              << " rate=" << format.sample_rate
+              << " channels=" << format.channels << "\n"
+              << std::flush;
+    const auto stream = minitts::app::make_stdin_pcm_stream(format, sample_format);
+    return minitts::app::run_streaming_task(streaming, request, sink, stream);
+}
+
 void run_streaming(
     int argc,
     char ** argv,
@@ -459,12 +511,13 @@ void run_streaming(
     engine::runtime::IVoiceTaskSession & session,
     engine::runtime::TaskRequest & request) {
     const auto out_dir = minitts::cli::optional_path_arg(argc, argv, "--out-dir");
-    const auto result = minitts::app::run_streaming_task(
-        streaming,
-        request,
+    minitts::cli::PartialTextRenderer partial_renderer(stdout_is_terminal());
+    const minitts::app::StreamEventSink sink =
         [&](const engine::runtime::StreamEvent & event) {
             if (event.partial_text.has_value()) {
-                std::cout << "partial_text=" << event.partial_text->text << "\n";
+                // Flushed so a live source's partials appear as they are produced rather than
+                // when the stdio buffer happens to fill.
+                std::cout << partial_renderer.render(event.partial_text->text) << std::flush;
             }
             engine::runtime::TaskResult event_result;
             event_result.audio_output = event.audio_output;
@@ -495,7 +548,13 @@ void run_streaming(
                 }
                 std::cout << " sample=" << activity.sample << " probability=" << activity.probability << "\n";
             }
-        });
+        };
+
+    const auto result = stream_audio_from_stdin(argc, argv)
+        ? run_streaming_from_stdin(argc, argv, streaming, request, sink)
+        : minitts::app::run_streaming_task(streaming, request, sink);
+    // Close the transcript line so the summary below starts on a fresh row.
+    std::cout << partial_renderer.finish();
     std::cout << "family=" << session.family() << "\n";
     std::cout << "task=" << engine::runtime::to_string(session.task_kind()) << "\n";
     std::cout << "mode=" << engine::runtime::to_string(session.run_mode()) << "\n";
@@ -705,6 +764,9 @@ int audiocpp_cli_main(int argc, char ** argv) {
             engine::runtime::parse_voice_task_kind(*task_name),
             engine::runtime::parse_run_mode(mode_name),
         };
+        if (stream_audio_from_stdin(argc, argv) && task_spec.mode != engine::runtime::RunMode::Streaming) {
+            throw std::runtime_error("--audio - reads live PCM and requires --mode streaming");
+        }
 
         engine::runtime::SessionOptions session_options;
         session_options.backend.type = parse_backend(find_arg(argc, argv, "--backend").value_or("cpu"));

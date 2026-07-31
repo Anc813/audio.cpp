@@ -14,7 +14,8 @@ Just launch this (it starts the server for you):
     venv\\Scripts\\python audiocpp-portable\\webui.py
 
 Env overrides:
-    AUDIOCPP_BACKEND=gpu|cpu     which bin dir to launch the server from
+    AUDIOCPP_BACKEND=gpu|cpu|metal
+                                 which bin dir to launch the server from
                                  (default: auto — gpu when an NVIDIA driver and the
                                  gpu server build are both present, else cpu)
     AUDIOCPP_THREADS=N           ggml compute threads (default 1; cpu backend
@@ -42,7 +43,7 @@ import threading
 import time
 import warnings
 import wave
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 import numpy as np
 import requests
@@ -212,10 +213,80 @@ GGUF_EXE_NAME = "audiocpp_gguf" + EXE_SUFFIX
 SERVER_LAUNCHER = SERVER_EXE_NAME
 
 
+def _safe_local_package_file(remote_path, strip_prefix):
+    prefix = (strip_prefix or "").strip("/")
+    if not prefix or prefix == ".":
+        local = remote_path
+    else:
+        marker = prefix + "/"
+        if not remote_path.startswith(marker):
+            raise ValueError(f"{remote_path!r} does not start with strip_prefix {strip_prefix!r}")
+        local = remote_path[len(marker):]
+    local = local.replace("\\", "/")
+    parts = [part for part in local.split("/") if part]
+    if not parts or any(part == ".." for part in parts):
+        raise ValueError(f"unsafe package file path: {remote_path!r}")
+    return "/".join(parts)
+
+
+def _load_spec_packages():
+    """Package metadata from model_specs/*.json, keyed by package id and family.
+
+    model_specs is the runtime/download source of truth for new GGUF packages. The
+    WebUI catalog still owns UI placement and labels, then this metadata fills in
+    the install id, target directory, and required file list.
+    """
+    by_id, by_family = {}, {}
+    for root in (PROJECT_ROOT, BUNDLE_ROOT):
+        spec_dir = os.path.join(root, "model_specs")
+        if not os.path.isdir(spec_dir):
+            continue
+        for name in sorted(os.listdir(spec_dir)):
+            if not name.endswith(".json"):
+                continue
+            path = os.path.join(spec_dir, name)
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    spec = json.load(f)
+            except (OSError, ValueError) as exc:
+                print(f"[webui] failed to read model spec {path}: {exc}")
+                continue
+            family = spec.get("family") or os.path.splitext(name)[0]
+            defaults = spec.get("package_defaults", {}).get("download", {})
+            for package in spec.get("packages", []):
+                try:
+                    files = tuple(package.get("files") or ())
+                    strip_prefix = package.get("strip_prefix", "")
+                    record = {
+                        "family": family,
+                        "id": package["id"],
+                        "display_name": package.get("display_name", package["id"]),
+                        "format": package["format"],
+                        "precision": package.get("precision", ""),
+                        "target_directory": package["target_directory"],
+                        "files": files,
+                        "required_files": tuple(_safe_local_package_file(f, strip_prefix) for f in files),
+                        "strip_prefix": strip_prefix,
+                        "download": {**defaults, **package.get("download", {})},
+                        "default": bool(package.get("default", False)),
+                    }
+                except (KeyError, TypeError, ValueError) as exc:
+                    print(f"[webui] ignored invalid package in {path}: {exc}")
+                    continue
+                by_id[record["id"]] = record
+                by_family.setdefault(family, []).append(record)
+        if by_id:
+            break
+    return by_id, by_family
+
+
+SPEC_PACKAGE_BY_ID, SPEC_PACKAGES_BY_FAMILY = {}, {}
+
+
 def _cmake_cache_backend(bin_dir):
-    """gpu/cpu for a build tree whose directory name doesn't say, read from its
-    CMakeCache.txt (GGML_CUDA:BOOL=ON). Returns None when there is no cache to
-    read — an installed tree, or a layout we don't recognize."""
+    """Backend for a build tree whose directory name doesn't say, read from its
+    CMakeCache.txt. Returns None when there is no cache to read — an installed
+    tree, or a layout we don't recognize."""
     # Walk up from the bin dir to find the build tree's CMakeCache.txt. Single-config
     # generators put the exe in build/bin (cache one level up); multi-config ones
     # (Visual Studio) nest it in build/bin/Release, so the cache sits two levels up.
@@ -234,9 +305,15 @@ def _cmake_cache_backend(bin_dir):
         return None
     try:
         with open(cache, encoding="utf-8", errors="replace") as fh:
+            enabled = {}
             for line in fh:
-                if line.startswith("GGML_CUDA:"):
-                    return "gpu" if line.rstrip().upper().endswith("ON") else "cpu"
+                key, sep, value = line.partition(":")
+                if sep:
+                    enabled[key] = line.rstrip().upper().endswith("ON")
+            if enabled.get("ENGINE_ENABLE_METAL") or enabled.get("GGML_METAL"):
+                return "metal"
+            if "GGML_CUDA" in enabled:
+                return "gpu" if enabled["GGML_CUDA"] else "cpu"
     except OSError:
         return None
     return "cpu"
@@ -246,12 +323,12 @@ def _discover_dev_bin_dirs():
     """Locate from-source build outputs, newest-wins per backend.
 
     Two layouts are in the wild. The one README documents is
-    build/<os>-<backend>-<type>/bin (windows-cuda-release, linux-cpu-release, …),
+    build/<os>-<backend>-<type>/bin (windows-cuda-release, macos-metal-release, …),
     where the backend is in the directory name. A plain `cmake -B build` instead
     lands in build/bin and says nothing about the backend, so that one is
     classified from its CMakeCache."""
     out = {}
-    for backend, keyword in (("gpu", "*cuda*"), ("cpu", "*cpu*")):
+    for backend, keyword in (("gpu", "*cuda*"), ("metal", "*metal*"), ("cpu", "*cpu*")):
         hits = sorted(d for d in glob.glob(os.path.join(PROJECT_ROOT, "build", keyword, "bin"))
                       if os.path.isfile(os.path.join(d, SERVER_EXE_NAME)))
         if hits:
@@ -259,7 +336,8 @@ def _discover_dev_bin_dirs():
     # A plain `cmake -B build` lands in build/bin with single-config generators
     # (Ninja, Makefiles); multi-config generators (Visual Studio, Xcode) nest the
     # exe in a per-config subdir, so also look in build/bin/Release and .../Debug.
-    for plain in (os.path.join(PROJECT_ROOT, "build", "bin"),
+    for plain in (os.path.join(PROJECT_ROOT, "build", "debug", "bin"),
+                  os.path.join(PROJECT_ROOT, "build", "bin"),
                   os.path.join(PROJECT_ROOT, "build", "bin", "Release"),
                   os.path.join(PROJECT_ROOT, "build", "bin", "Debug")):
         if not os.path.isfile(os.path.join(plain, SERVER_EXE_NAME)):
@@ -292,7 +370,7 @@ def _find_bundle_root():
     for c in (HERE,                                         # webui.py directly in the bundle
               PROJECT_ROOT,                                 # webui/ shipped under the bundle
               os.path.join(PROJECT_ROOT, "audiocpp-portable")):
-        if os.path.isdir(os.path.join(c, "gpu")) or os.path.isdir(os.path.join(c, "cpu")):
+        if any(os.path.isdir(os.path.join(c, b)) for b in ("gpu", "metal", "cpu")):
             return c
     if any(os.path.isfile(_dev_server_exe(b)) for b in DEV_BIN_DIRS):
         return PROJECT_ROOT
@@ -300,9 +378,10 @@ def _find_bundle_root():
 
 
 BUNDLE_ROOT = _find_bundle_root()
+SPEC_PACKAGE_BY_ID, SPEC_PACKAGES_BY_FAMILY = _load_spec_packages()
 
 def _detect_backend():
-    """Which bundle build (gpu/ or cpu/) to launch. AUDIOCPP_BACKEND=gpu|cuda|cpu
+    """Which bundle build to launch. AUDIOCPP_BACKEND=gpu|cuda|cpu|metal
     wins; otherwise auto-detect: gpu when an NVIDIA driver AND the gpu server
     build are both present, else cpu (the server runs fine on the cpu backend,
     just slower and with lower model coverage)."""
@@ -335,7 +414,6 @@ if not os.path.isfile(SERVER_EXE) and os.path.isfile(_dev_server_exe(BACKEND)):
     SERVER_EXE = _dev_server_exe(BACKEND)
 LOG_PATH = os.path.join(LOG_DIR, "audiocpp_server_webui.log")
 LOAD_TIMEOUT = int(os.environ.get("AUDIOCPP_LOAD_TIMEOUT", "300"))
-GGUF_TYPES = ("orig", "f16", "bf16", "q8_0", "q2_k", "q3_k", "q4_k", "q5_k", "q6_k")
 
 # Only families with a model package spec can load the runtime GGUF produced by
 # audiocpp_gguf; a safetensors file by itself is not evidence that the
@@ -386,20 +464,6 @@ def _spec_families():
 
 GGUF_NATIVE_FAMILIES = _spec_families()
 
-# These families have input layouts the WebUI can assemble without guessing.
-# Other native-GGUF composite packages remain available through the converter
-# CLI until their explicit multi-input layout is added here.
-GGUF_SIMPLE_MODEL_FAMILIES = frozenset({
-    "higgs_audio_stt",
-    "hviske_asr",
-    "nemotron_asr",
-    "qwen3_asr",
-    "qwen3_forced_aligner",
-    "vibevoice_asr",
-})
-GGUF_WEBUI_CONVERTIBLE_FAMILIES = GGUF_SIMPLE_MODEL_FAMILIES | {"qwen3_tts"}
-
-
 def _find_gguf_exe():
     """Find the converter in a development build or an integrated bundle.
 
@@ -410,15 +474,16 @@ def _find_gguf_exe():
     (linux-cuda-release, a plain build/bin, …) are covered too; the active
     backend is tried first, then the other one.
     """
-    other = "cpu" if BACKEND == "gpu" else "gpu"
     candidates = [
         os.environ.get("AUDIOCPP_GGUF"),
         *(os.path.join(DEV_BIN_DIRS[b], GGUF_EXE_NAME)
-          for b in (BACKEND, other) if b in DEV_BIN_DIRS),
+          for b in (BACKEND, "gpu", "metal", "cpu") if b in DEV_BIN_DIRS),
         os.path.join(BUNDLE_ROOT, BACKEND, GGUF_EXE_NAME),
         os.path.join(BUNDLE_ROOT, "gpu", GGUF_EXE_NAME),
+        os.path.join(BUNDLE_ROOT, "metal", GGUF_EXE_NAME),
         os.path.join(BUNDLE_ROOT, "cpu", GGUF_EXE_NAME),
         os.path.join(PROJECT_ROOT, "audiocpp-portable", "gpu", GGUF_EXE_NAME),
+        os.path.join(PROJECT_ROOT, "audiocpp-portable", "metal", GGUF_EXE_NAME),
         os.path.join(PROJECT_ROOT, "audiocpp-portable", "cpu", GGUF_EXE_NAME),
     ]
     seen = set()
@@ -434,25 +499,21 @@ def _find_gguf_exe():
             return candidate
     return None
 
-# model_manager_webui.py downloads not-yet-installed models in the background. It
-# wraps the upstream tools/model_manager.py CLI with resumable, Torch-free
-# downloads (falling back to the upstream tool if the wrapper isn't present).
 MODELS_ROOT = os.path.join(BUNDLE_ROOT, "models")
 
 
-def _find_model_manager():
-    for c in (os.environ.get("AUDIOCPP_MODEL_MANAGER"),
+def _find_spec_model_manager():
+    for c in (os.environ.get("AUDIOCPP_MODEL_MANAGER_V2"),
               os.path.join(HERE, "model_manager_webui.py"),
               os.path.join(BUNDLE_ROOT, "webui", "model_manager_webui.py"),
-              os.path.join(PROJECT_ROOT, "webui", "model_manager_webui.py"),
-              os.path.join(BUNDLE_ROOT, "tools", "model_manager.py"),
-              os.path.join(PROJECT_ROOT, "tools", "model_manager.py")):
+              os.path.join(BUNDLE_ROOT, "tools", "model_manager_v2.py"),
+              os.path.join(PROJECT_ROOT, "tools", "model_manager_v2.py")):
         if c and os.path.isfile(c):
             return c
     return None
 
 
-MODEL_MANAGER = _find_model_manager()
+SPEC_MODEL_MANAGER = _find_spec_model_manager()
 
 
 def _detect_vram_gb():
@@ -549,6 +610,27 @@ MODEL_PROFILES = {
     "pocket_tts": {
         "input_hint": "**PocketTTS**：必须提供参考音色（上传/录制/内置）。",
     },
+    "inflect_v2": {
+        "input_hint": "**Inflect Micro v2**：英语离线 TTS；Micro 是默认包，Nano 可另装后手动选择路径。",
+        "lang_map": {"english": "en"},
+    },
+    "dramabox": {
+        "input_hint": (
+            "**DramaBox**：英语 TTS / voice clone；上传参考音色可克隆，"
+            "长文本建议写清楚说话人描述。"),
+        "lang_map": {"english": "en"},
+    },
+    "confucius4_tts": {
+        "input_hint": (
+            "**Confucius4-TTS**：必须提供参考音色；当前中文/英语路径更可靠，"
+            "非中英语种仍在验证中。"),
+        "lang_map": {
+            "chinese": "zh", "english": "en", "japanese": "ja", "korean": "ko",
+            "french": "fr", "german": "de", "italian": "it", "portuguese": "pt",
+            "russian": "ru", "spanish": "es",
+        },
+        "require_voice": True,
+    },
     "chatterbox": {
         "input_hint": (
             "**Chatterbox** 声音克隆：必须提供参考音色；语言仅支持英/西/法/德/意/葡/韩"
@@ -575,6 +657,15 @@ MODEL_PROFILES = {
         "input_hint": (
             "**Voxtral Mini 4B Realtime**：自动语种转写；支持⚡流式转写，"
             "勾选后按模型原生音频分块边转边出字；不输出时间戳。"),
+        "supports_streaming": True,
+    },
+    "fun_asr_nano": {
+        "input_hint": "**Fun-ASR-Nano**：轻量离线 ASR；支持 auto/中文/英语/日语。",
+    },
+    "parakeet_tdt": {
+        "input_hint": (
+            "**Parakeet-TDT**：离线/长音频/流式 ASR；支持多种欧洲语言，"
+            "留空=自动。"),
         "supports_streaming": True,
     },
     "ace_step": {
@@ -619,6 +710,12 @@ MODEL_PROFILES = {
             "**Seed-VC**：源语音 + 目标音色参考（几秒干净人声）；"
             "默认 v2 路线，v1 旧路线在高级参数切换。"),
     },
+    "rvc": {
+        "input_hint": (
+            "**RVC**：所选 GGUF 即目标音色；上传源语音即可转换；"
+            "索引/音高等选项可用 JSON 传。"),
+        "send_seed": False,
+    },
     "miocodec": {
         "input_hint": "**MioCodec**：codec 重建式转换——源提供内容，参考提供音色。",
     },
@@ -627,6 +724,9 @@ MODEL_PROFILES = {
     },
     "mel_band_roformer": {
         "input_hint": "**Mel-Band RoFormer**：输出人声轨 + 伴奏轨。",
+    },
+    "bs_roformer": {
+        "input_hint": "**BS-RoFormer**：输出人声轨 + 伴奏轨。",
     },
     "nemotron_asr": {
         "input_hint": ("**Nemotron ASR**：100+ 语种；支持⚡流式转写"
@@ -709,17 +809,24 @@ MODEL_HINTS_EN = {
     "voxcpm2": "**VoxCPM2**: upload a clean voice reference and its transcript. Streaming is supported.",
     "qwen3_tts": "**Qwen3-TTS**: a voice reference and matching transcript are recommended.",
     "pocket_tts": "**PocketTTS** requires a voice reference.",
+    "inflect_v2": "**Inflect Micro v2**: English offline TTS. Micro is the default package; Nano can be selected manually.",
+    "dramabox": "**DramaBox**: English TTS and voice clone. Upload a reference voice to clone.",
+    "confucius4_tts": "**Confucius4-TTS** requires a voice reference. Chinese/English are the most reliable paths.",
     "chatterbox": "**Chatterbox** requires a voice reference and supports en/es/fr/de/it/pt/ko.",
     "qwen3_asr": "**Qwen3-ASR** automatically splits long audio. Language and context are optional.",
     "voxtral_realtime": "**Voxtral Mini 4B Realtime** auto-detects language and supports streaming transcription. Timestamps are not exposed.",
+    "fun_asr_nano": "**Fun-ASR-Nano** is a lightweight offline ASR model for auto/zh/en/ja.",
+    "parakeet_tdt": "**Parakeet-TDT** supports offline, long-form and streaming ASR for many European languages.",
     "ace_step": "**ACE-Step**: describe style, instruments and mood. Editing routes require source audio.",
     "stable_audio": "**Stable Audio** accepts English prompts only. Source audio enables init/inpaint.",
     "heartmula": "**HeartMuLa** requires `tags` and lyrics. Estimated peak VRAM is about 25 GB.",
     "vevo2": "**Vevo2**: provide source audio and a target voice. Long audio is split automatically.",
     "seed_vc": "**Seed-VC**: provide source audio and a clean target voice reference.",
+    "rvc": "**RVC**: the selected GGUF is the target voice; upload source speech to convert.",
     "miocodec": "**MioCodec** reconstructs source content with the reference voice.",
     "htdemucs": "**HTDemucs** outputs drums, bass, other and vocals.",
     "mel_band_roformer": "**Mel-Band RoFormer** outputs vocals and accompaniment.",
+    "bs_roformer": "**BS-RoFormer** outputs vocals and accompaniment.",
     "nemotron_asr": "**Nemotron ASR** supports 100+ languages and streaming transcription.",
     "higgs_audio_stt": "**Higgs Audio STT** supports streaming transcription.",
     "vibevoice_asr": "**VibeVoice-ASR** uses offline transcription with automatic language and speaker segmentation.",
@@ -1432,10 +1539,92 @@ def _load_catalog():
     if os.path.isfile(CATALOG_PATH):
         try:
             with open(CATALOG_PATH, "r", encoding="utf-8") as f:
-                return json.load(f)
+                return _normalize_catalog_from_specs(json.load(f))
         except Exception as e:
             print(f"[webui] failed to read {CATALOG_PATH}: {e}; using defaults")
-    return DEFAULT_CATALOG
+    return _normalize_catalog_from_specs(DEFAULT_CATALOG)
+
+
+def _variant_key(value):
+    key = re.sub(r"[^a-z0-9]+", "", str(value).lower())
+    for suffix in ("safetensors", "gguf", "q80", "bf16", "f16", "orig"):
+        if key.endswith(suffix):
+            key = key[:-len(suffix)]
+    return key
+
+
+def _prefer_package(candidates):
+    gguf = [p for p in candidates if p.get("format") == "gguf"]
+    if gguf:
+        defaults = [p for p in gguf if p.get("default")]
+        q8 = [p for p in gguf if p.get("precision") == "q8_0"]
+        return (defaults or q8 or gguf)[0]
+    defaults = [p for p in candidates if p.get("default")]
+    return (defaults or candidates)[0] if candidates else None
+
+
+def _matching_spec_package(entry):
+    family = entry.get("family")
+    packages = SPEC_PACKAGES_BY_FAMILY.get(family, [])
+    if not packages:
+        return None
+    download_id = entry.get("download_id") or ""
+    current = SPEC_PACKAGE_BY_ID.get(download_id)
+    if current is not None:
+        if current.get("format") == "gguf":
+            return current
+        stem = re.sub(r"_?safetensors$", "", current["id"])
+        related = [p for p in packages if p["id"].startswith(stem + "_") and p.get("format") == "gguf"]
+        return _prefer_package(related) or current
+
+    direct = [p for p in packages if p["id"] == download_id or p["id"].startswith(download_id + "_")]
+    if direct:
+        return _prefer_package(direct)
+
+    path_base = os.path.basename(str(entry.get("path", "")).rstrip("/\\"))
+    path_key = _variant_key(path_base)
+    same_target = [p for p in packages if _variant_key(p.get("target_directory", "")) == path_key]
+    if same_target:
+        target = _prefer_package(same_target)
+        if target and target.get("format") == "safetensors":
+            stem = re.sub(r"_?safetensors$", "", target["id"])
+            related = [p for p in packages if p["id"].startswith(stem + "_") and p.get("format") == "gguf"]
+            return _prefer_package(related) or target
+        return target
+    return None
+
+
+def _without_legacy_weight_type_options(entry):
+    options = entry.get("session_options")
+    if not isinstance(options, dict):
+        return
+    filtered = {k: v for k, v in options.items()
+                if not (isinstance(k, str) and k.endswith("weight_type"))}
+    if filtered:
+        entry["session_options"] = filtered
+    else:
+        entry.pop("session_options", None)
+
+
+def _normalize_catalog_from_specs(catalog):
+    out = dict(catalog)
+    models = []
+    for raw in catalog.get("models", []):
+        entry = dict(raw)
+        package = _matching_spec_package(entry)
+        if package is not None:
+            legacy_download_id = entry.get("download_id")
+            entry["download_id"] = package["id"]
+            entry["download_path"] = "models/" + package["target_directory"]
+            entry["package_format"] = package.get("format")
+            entry["package_precision"] = package.get("precision")
+            if legacy_download_id and legacy_download_id != package["id"]:
+                entry["legacy_download_id"] = legacy_download_id
+            if package.get("format") == "gguf":
+                _without_legacy_weight_type_options(entry)
+        models.append(entry)
+    out["models"] = models
+    return out
 
 
 def _load_model_params():
@@ -1452,19 +1641,24 @@ def _load_model_params():
 
 def _load_required_files():
     """download_id -> 安装完成后模型目录里必须存在的文件清单（configs/required_files.json，
-    由 model_manager.py CATALOG 的 required_files 预生成，含 .pt->.safetensors 等转换后
-    的最终布局）。用于把“手动拷贝/下载中断的不完整目录”和“已安装”区分开——不完整目录
-    server 端只会报 no registered model loader，用户看不出缺了什么。
+    优先来自 model_specs/ 的 GGUF 包；configs/required_files.json 只保留给已经存在的
+    legacy 本地目录做完整性提示）。用于把“手动拷贝/下载中断的不完整目录”和“已安装”
+    区分开——不完整目录 server 端只会报 no registered model loader，用户看不出缺了什么。
     文件缺失/损坏 -> {}（完整性检查停用，退回“目录存在即已安装”的旧行为）。"""
+    required = {pkg_id: list(package["required_files"])
+                for pkg_id, package in SPEC_PACKAGE_BY_ID.items()
+                if package.get("required_files")}
     if os.path.isfile(REQUIRED_FILES_PATH):
         try:
             with open(REQUIRED_FILES_PATH, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            return {k: v for k, v in data.items() if isinstance(v, list)}
+            for key, value in data.items():
+                if isinstance(value, list) and key not in required:
+                    required[key] = value
         except Exception as e:
             print(f"[webui] failed to read {REQUIRED_FILES_PATH}: {e}; "
                   + _t("跳过模型完整性检查", "skipping model integrity check"))
-    return {}
+    return required
 
 
 CATALOG = _load_catalog()
@@ -1497,12 +1691,17 @@ _loaded_session_options = None   # 随本次加载写进 server config 的 sessi
 _loaded_mode = None              # 本次加载的运行模式（offline/streaming），None=未加载
 
 
-def _missing_required_files(entry):
+def _resolve_bundle_path(path):
+    ap = path if os.path.isabs(path) else os.path.join(BUNDLE_ROOT, path)
+    return os.path.normpath(ap).replace("\\", "/")
+
+
+def _missing_required_files_for(path, download_id):
     """目录已存在但缺失的必须文件（相对模型目录）；目录不存在或无清单时返回 []。"""
-    req = REQUIRED_FILES.get(entry.get("download_id") or "")
-    if not req or not os.path.isdir(entry["abs_path"]):
+    req = REQUIRED_FILES.get(download_id or "")
+    if not req or not os.path.isdir(path):
         return []
-    return [f for f in req if not os.path.isfile(os.path.join(entry["abs_path"], f))]
+    return [f for f in req if not os.path.isfile(os.path.join(path, f))]
 
 
 def catalog_models():
@@ -1511,13 +1710,29 @@ def catalog_models():
     incomplete（missing_files 列出缺什么），加载入口据此给出明确报错。"""
     out = []
     for m in CATALOG.get("models", []):
-        rel = m.get("path", "")
-        ap = rel if os.path.isabs(rel) else os.path.join(BUNDLE_ROOT, rel)
         entry = dict(m)
-        entry["abs_path"] = os.path.normpath(ap).replace("\\", "/")
-        entry["missing_files"] = _missing_required_files(entry)
+        legacy_path = _resolve_bundle_path(m.get("path", ""))
+        package_path = _resolve_bundle_path(m.get("download_path") or m.get("path", ""))
+        package_missing = _missing_required_files_for(package_path, entry.get("download_id"))
+        legacy_missing = _missing_required_files_for(legacy_path, entry.get("legacy_download_id")
+                                                     or entry.get("download_id"))
+        package_complete = os.path.exists(package_path) and not package_missing
+        legacy_complete = os.path.exists(legacy_path) and not legacy_missing
+        if package_complete:
+            entry["abs_path"] = package_path
+            entry["missing_files"] = []
+        elif legacy_complete:
+            entry["abs_path"] = legacy_path
+            entry["missing_files"] = []
+        elif os.path.exists(package_path):
+            entry["abs_path"] = package_path
+            entry["missing_files"] = package_missing
+        else:
+            entry["abs_path"] = legacy_path if os.path.exists(legacy_path) else package_path
+            entry["missing_files"] = legacy_missing if os.path.exists(legacy_path) else []
         entry["incomplete"] = bool(entry["missing_files"])
-        entry["installed"] = os.path.exists(entry["abs_path"]) and not entry["incomplete"]
+        entry["installed"] = package_complete or legacy_complete
+        entry["download_installed"] = package_complete
         entry["label"] = m.get("display_name") or m.get("id", "?")
         out.append(entry)
     return out
@@ -1841,11 +2056,39 @@ def loaded_ids():
         return []
 
 
+def _is_downloaded_gguf_package(entry):
+    required = REQUIRED_FILES.get(entry.get("download_id") or "") or []
+    return bool(required) and all(str(path).lower().endswith(".gguf") for path in required)
+
+
+def _declared_package_gguf_path(entry):
+    if not _is_downloaded_gguf_package(entry):
+        return None
+    model_path = entry["abs_path"]
+    if not os.path.isdir(model_path):
+        return None
+    required = REQUIRED_FILES.get(entry.get("download_id") or "") or []
+    found = []
+    for rel in required:
+        parts = [part for part in str(rel).replace("\\", "/").split("/") if part]
+        candidate = os.path.join(model_path, *parts)
+        if os.path.isfile(candidate):
+            found.append(candidate)
+    return found[0] if len(found) == 1 else None
+
+
+def _server_model_path(entry):
+    gguf = _existing_gguf_path(entry)
+    if gguf is not None and _is_downloaded_gguf_package(entry):
+        return gguf
+    return entry["abs_path"]
+
+
 def _write_temp_config(entry):
     model = {
         "id": entry["id"],
         "family": entry["family"],
-        "path": entry["abs_path"],
+        "path": _server_model_path(entry),
         "task": entry.get("task", "tts"),
         "mode": entry.get("mode", "offline"),
     }
@@ -1988,8 +2231,8 @@ def _pump_server_output(proc):
 def _start_server(entry):
     global _server_proc, _loaded_id
     if not os.path.isfile(SERVER_EXE):
-        raise gr.Error(_t("找不到 server：{path}（可用 AUDIOCPP_BACKEND=gpu|cpu 指定）",
-                          "Server not found: {path}. Set AUDIOCPP_BACKEND=gpu|cpu.",
+        raise gr.Error(_t("找不到 server：{path}（可用 AUDIOCPP_BACKEND=gpu|cpu|metal 指定）",
+                          "Server not found: {path}. Set AUDIOCPP_BACKEND=gpu|cpu|metal.",
                           path=SERVER_EXE))
     cfg = _write_temp_config(entry)
     flags = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
@@ -2196,7 +2439,7 @@ curl {SERVER}/v1/audio/speech -H "Content-Type: application/json" -o out.wav \\
     return _t(content, content, language)
 
 
-# --- background model downloads (via tools/model_manager.py) ----------------
+# --- background model downloads (via model_specs packages) ------------------
 _dl_lock = threading.Lock()
 _downloads = {}  # model_id -> {"proc": Popen, "log": path}
 
@@ -2221,19 +2464,68 @@ def _fmt_bytes(n):
     return f"{n / 1e9:.2f} GB" if n >= 1e9 else f"{n / 1e6:.1f} MB"
 
 
+def _staged_bytes(entry):
+    """Bytes already on disk for a running download, or None before staging starts.
+    model_manager_v2 stages spec packages as a hidden temp directory directly
+    under models/ and renames it into the final target on completion."""
+    package = SPEC_PACKAGE_BY_ID.get(entry.get("download_id") or "")
+    if package is None:
+        return None
+    safe_target = package.get("target_directory", "").replace("/", "_").replace("\\", "_")
+    probes = sorted(glob.glob(os.path.join(MODELS_ROOT, f".{safe_target}.*")))
+    if not probes:
+        return None
+    return sum(_dir_size_bytes(path) for path in probes if os.path.isdir(path))
+
+
 def _download_progress_note(entry):
-    """Bytes already on disk for a running download. model_manager stages into
-    models/.engine_model_staging/<target>.partial/ and renames on completion;
-    fall back to the whole staging root for packages with composite targets."""
-    staging_root = os.path.join(MODELS_ROOT, ".engine_model_staging")
-    base = os.path.basename(entry.get("path", "").rstrip("/\\"))
-    safe = re.sub(r"[^A-Za-z0-9_.-]", "_", base)
-    staging = os.path.join(staging_root, safe + ".partial")
-    probe = staging if os.path.isdir(staging) else staging_root
-    if not os.path.isdir(probe):
+    """Progress for a running download, against the package total when it is known.
+    The total is what makes a long download legible ("2 of 14 GB" rather than "2 GB")."""
+    done = _staged_bytes(entry)
+    if done is None:
         return _t("尚未写入数据（正在连接/解析）", "Waiting for data…")
-    return _t("已下载 {size}", "Downloaded {size}",
-              size=_fmt_bytes(_dir_size_bytes(probe)))
+    total = package_download_bytes(entry.get("download_id"))
+    if not total:
+        return _t("已下载 {size}", "Downloaded {size}", size=_fmt_bytes(done))
+    return _t("已下载 {done} / {total}（{pct}%）", "Downloaded {done} of {total} ({pct}%)",
+              done=_fmt_bytes(done), total=_fmt_bytes(total),
+              pct=min(100, int(done * 100 / total)))
+
+
+def _live_download_prefix(entry):
+    """Requirements and warnings that have to survive the progress refresh.
+
+    download_status() rewrites the whole message every timer tick, so anything shown
+    only by the initial Download click was replaced within three seconds — long enough
+    to miss entirely, which reads as no warning ever being shown. Disk is judged against
+    the bytes still to fetch, so a healthy download does not drift into a false alarm as
+    free space drops."""
+    lines = []
+    memory = memory_alarm(entry)
+    if memory:
+        need_gb, available_gb, share, device = memory
+        lines.append(_t(
+            "🚨 **{device}告警**：估算需 **{need:g}G** / 本机 {local:g}G，占用 **{share:.0%}**。",
+            "🚨 **{device} alarm**: needs ≈**{need:g} GB** of the {local:g} GB here — **{share:.0%}**.",
+            device=_t("显存", "VRAM") if device == "vram" else _t("内存", "RAM"),
+            need=need_gb, local=available_gb, share=share))
+    total = package_download_bytes(entry.get("download_id"))
+    usage = _disk_usage(MODELS_ROOT)
+    if total is not None:
+        remaining = max(0, total - (_staged_bytes(entry) or 0))
+        verdict = _disk_verdict(remaining, usage)
+        if verdict == "short":
+            lines.append(_t("❌ **磁盘将不够**：还需约 {need}，models/ 只剩 {free}。",
+                            "❌ **Will run out of disk**: ≈{need} still to fetch, only {free} free "
+                            "on models/.", need=_fmt_bytes(remaining), free=_fmt_bytes(usage.free)))
+        elif verdict == "alarm":
+            lines.append(_t("🚨 **磁盘告警**：下完仅剩 {left}（告警线低于 {free_limit}）。",
+                            "🚨 **Disk alarm**: {left} left when this finishes "
+                            "(alarm below {free_limit} free).",
+                            left=_fmt_bytes(usage.free - remaining),
+                            free_limit=_fmt_bytes(DISK_FREE_ALARM_BYTES)))
+    lines.extend(requirements_info_lines(entry))
+    return "\n\n".join(lines) + "\n\n" if lines else ""
 
 
 def hf_token_present():
@@ -2243,24 +2535,261 @@ def hf_token_present():
     return os.path.isfile(os.path.join(os.path.expanduser("~"), ".cache", "huggingface", "token"))
 
 
+# --- pre-download requirements (disk + VRAM) --------------------------------
+# Weights run from 40 MB to 17 GB, and nothing used to say so before the download
+# started: a package that could not fit simply filled the disk and failed late, with
+# the partial left behind in .engine_model_staging.
+
+_dl_size_cache = {}      # download_id -> total remote bytes, or None when unknown
+_dl_size_lock = threading.Lock()
+
+
+# Leaving too little free space after the download is worth stopping for: not because the
+# fetch fails (it fits), but because the volume is no longer comfortable to work in.
+# Alarming, not blocking: it is the user's disk, so the download stays available behind
+# a confirm.
+DISK_FREE_ALARM_BYTES = 20 * 1000 ** 3
+# Likewise for the device the model runs on: needing more than this share of VRAM (or of
+# system RAM on the CPU backend) means it will run, if at all, with nothing to spare.
+MEMORY_USAGE_ALARM = 0.80
+
+
+def package_download_bytes(download_id):
+    """Total remote size of everything `download_id` fetches, or None if unknown.
+
+    Read live from the Hugging Face tree API rather than stored in the catalog: a
+    hand-copied size goes stale the moment a repo is reuploaded, and models_catalog.json
+    already carries more hand-maintained facts than is comfortable. Unknown (None) for
+    unreachable repos and gated repos without a token — callers must treat it as
+    "no information", never as zero."""
+    if not download_id:
+        return None
+    with _dl_size_lock:
+        if download_id in _dl_size_cache:
+            return _dl_size_cache[download_id]
+    spec_package = SPEC_PACKAGE_BY_ID.get(download_id)
+    if spec_package is not None:
+        total = None
+        download = spec_package.get("download") or {}
+        if download.get("kind") == "huggingface_snapshot" and download.get("repo"):
+            repo = download["repo"]
+            revision = download.get("revision", "main")
+            headers = {"User-Agent": "audio.cpp webui"}
+            token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")
+            if token:
+                headers["Authorization"] = f"Bearer {token.strip()}"
+            sizes = []
+            try:
+                for remote in spec_package.get("files", ()):
+                    url = ("https://huggingface.co/"
+                           + repo + "/resolve/" + quote(str(revision), safe="")
+                           + "/" + "/".join(quote(part, safe="") for part in remote.split("/")))
+                    response = requests.head(url, headers=headers, allow_redirects=True, timeout=60)
+                    response.raise_for_status()
+                    length = response.headers.get("Content-Length")
+                    if length is None:
+                        sizes = []
+                        break
+                    sizes.append(int(length))
+                total = sum(sizes) if sizes else None
+            except Exception as exc:
+                print(f"[webui] could not read the download size of {download_id}: {exc}")
+        with _dl_size_lock:
+            _dl_size_cache[download_id] = total
+        return total
+    with _dl_size_lock:
+        _dl_size_cache[download_id] = None
+    return None
+
+
+def _disk_usage(path):
+    """(total, used, free) for the volume holding `path`, walking up to the nearest
+    existing ancestor (models/ need not exist yet), or None if it cannot be read."""
+    probe = os.path.abspath(path)
+    while not os.path.isdir(probe):
+        parent = os.path.dirname(probe)
+        if parent == probe:
+            return None
+        probe = parent
+    try:
+        return shutil.disk_usage(probe)
+    except OSError:
+        return None
+
+
+def _free_bytes(path):
+    """Free bytes on the volume holding `path`, or None."""
+    usage = _disk_usage(path)
+    return usage.free if usage else None
+
+
+def _system_ram_gb():
+    """Total physical RAM in GB, or None. What the CPU backend actually runs a model in,
+    so it is the figure to judge against when there is no GPU in play."""
+    try:
+        if hasattr(os, "sysconf") and "SC_PAGE_SIZE" in os.sysconf_names:
+            return round(os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES") / 1024 ** 3, 1)
+    except (OSError, ValueError):
+        pass
+    try:                                  # Windows has no sysconf
+        import ctypes
+
+        class _MemStatus(ctypes.Structure):
+            _fields_ = [("dwLength", ctypes.c_ulong), ("dwMemoryLoad", ctypes.c_ulong),
+                        ("ullTotalPhys", ctypes.c_ulonglong), ("ullAvailPhys", ctypes.c_ulonglong),
+                        ("ullTotalPageFile", ctypes.c_ulonglong),
+                        ("ullAvailPageFile", ctypes.c_ulonglong),
+                        ("ullTotalVirtual", ctypes.c_ulonglong),
+                        ("ullAvailVirtual", ctypes.c_ulonglong),
+                        ("ullAvailExtendedVirtual", ctypes.c_ulonglong)]
+
+        status = _MemStatus()
+        status.dwLength = ctypes.sizeof(_MemStatus)
+        ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status))
+        return round(status.ullTotalPhys / 1024 ** 3, 1)
+    except Exception:
+        return None
+
+
+LOCAL_RAM_GB = _system_ram_gb()
+
+
+def memory_alarm(entry):
+    """(need_gb, available_gb, share, device) when the model would take more than
+    MEMORY_USAGE_ALARM of the device it runs on, else None.
+
+    The CPU backend is judged against system RAM: min_vram_gb is a weights-plus-activations
+    estimate, so it is the right order of magnitude for either device, and a CPU run that
+    needs 150% of RAM is exactly as unusable as a GPU one."""
+    need = entry.get("min_vram_gb")
+    if not need:
+        return None
+    device = "ram" if BACKEND == "cpu" else "vram"
+    available = LOCAL_RAM_GB if device == "ram" else LOCAL_VRAM_GB
+    if not available:
+        return None
+    share = float(need) / float(available)
+    return (float(need), float(available), share, device) if share > MEMORY_USAGE_ALARM else None
+
+
+def _disk_fill_after(need_bytes, usage):
+    """Fraction of the volume in use once `need_bytes` more is written, or None."""
+    if need_bytes is None or usage is None or not usage.total:
+        return None
+    return (usage.used + need_bytes) / usage.total
+
+
+def _disk_verdict(need_bytes, usage):
+    """"" | "alarm" | "short" for fetching `need_bytes` onto `usage`'s volume.
+
+    "short" means it cannot fit at all; "alarm" means it fits but leaves less than
+    DISK_FREE_ALARM_BYTES free."""
+    if need_bytes is None or usage is None:
+        return ""
+    if usage.free < need_bytes:
+        return "short"
+    left = usage.free - need_bytes
+    return "alarm" if left < DISK_FREE_ALARM_BYTES else ""
+
+
+def requirements_info_lines(entry):
+    """What the model costs: download size, free space, and the VRAM estimate.
+
+    Reported whatever the backend. _vram_shortfall() deliberately stays quiet on CPU —
+    there is no VRAM to fall short of — but "how much GPU memory does this need" is a
+    question worth answering before a multi-GB download, whichever backend happens to
+    be built, so the estimate is stated here and the CPU case is labelled."""
+    lines = []
+    need = package_download_bytes(entry.get("download_id"))
+    usage = _disk_usage(MODELS_ROOT)
+    if need is not None:
+        fill = _disk_fill_after(need, usage)
+        if fill is None:
+            lines.append(_t("📦 下载约 {need}", "📦 Download ≈{need}", need=_fmt_bytes(need)))
+        else:
+            lines.append(_t("📦 下载约 {need} · models/ 可用 {free} · 占用 {before:.0%} → {fill:.0%}",
+                            "📦 Download ≈{need} · {free} free on models/ · {before:.0%} → {fill:.0%} full",
+                            need=_fmt_bytes(need), free=_fmt_bytes(usage.free),
+                            before=usage.used / usage.total, fill=fill))
+    vram = entry.get("min_vram_gb")
+    if vram:
+        on_cpu = BACKEND == "cpu"
+        available = LOCAL_RAM_GB if on_cpu else LOCAL_VRAM_GB
+        if not available:
+            lines.append(_t("🎛️ 估算需显存 ≥{need:g}G", "🎛️ Needs ≈{need:g} GB VRAM",
+                            need=float(vram)))
+        elif on_cpu:
+            lines.append(_t(
+                "🎛️ 估算需 ≥{need:g}G（GPU 显存口径）· 当前 CPU 后端跑在系统内存里：本机 {local:g}G，"
+                "占用 {share:.0%}",
+                "🎛️ Needs ≈{need:g} GB (VRAM estimate) · CPU backend runs in system RAM: "
+                "{local:g} GB here, {share:.0%} of it",
+                need=float(vram), local=available, share=float(vram) / available))
+        else:
+            lines.append(_t("🎛️ 估算需显存 ≥{need:g}G · 本机 {local:g}G，占用 {share:.0%}",
+                            "🎛️ Needs ≈{need:g} GB VRAM · {local:g} GB here, {share:.0%} of it",
+                            need=float(vram), local=available, share=float(vram) / available))
+    return lines
+
+
+def download_requirements(entry):
+    """(note, blocker) for `entry`: what the download costs, and why it must not start.
+
+    `note` is always shown so the size and VRAM estimate are visible up front; `blocker`
+    is non-empty only when the models volume provably cannot hold the download, in which
+    case starting it would just fill the disk and fail late."""
+    lines, blocker = requirements_info_lines(entry), ""
+    need = package_download_bytes(entry.get("download_id"))
+    usage = _disk_usage(MODELS_ROOT)
+    verdict = _disk_verdict(need, usage)
+    if verdict == "short":
+        blocker = _t(
+            "❌ **磁盘空间不足**：{label} 需要约 {need}，models/ 只剩 {free}，未开始下载。",
+            "❌ **Not enough disk space**: {label} needs ≈{need} but only {free} is free "
+            "on models/. The download was not started.",
+            label=entry["label"], need=_fmt_bytes(need), free=_fmt_bytes(usage.free))
+    elif verdict == "alarm":
+        lines.append(_t(
+            "🚨 **磁盘告警**：下完 `models/` 所在分区仅剩约 {left}（低于 {free_limit}）。确定要下载再点确认。",
+            "🚨 **Disk alarm**: the `models/` volume would have ≈{left} left "
+            "(below {free_limit}). Confirm only if you really want it.",
+            left=_fmt_bytes(usage.free - need), free_limit=_fmt_bytes(DISK_FREE_ALARM_BYTES)))
+    memory = memory_alarm(entry)
+    if memory:
+        need_gb, available_gb, share, device = memory
+        lines.append(_t(
+            "🚨 **{device}告警**：估算需 **{need:g}G**，本机 {local:g}G，占用 **{share:.0%}**"
+            "（告警线 {limit:.0%}）。下载没问题，但跑起来可能非常勉强甚至跑不动。",
+            "🚨 **{device} alarm**: needs ≈**{need:g} GB** of the {local:g} GB here — "
+            "**{share:.0%}** (alarm above {limit:.0%}). It will download fine, but expect it to "
+            "run badly or not at all.",
+            device=_t("显存", "VRAM") if device == "vram" else _t("内存", "RAM"),
+            need=need_gb, local=available_gb, share=share, limit=MEMORY_USAGE_ALARM))
+    return ("\n\n".join(lines) + "\n\n" if lines else ""), blocker
+
+
 def download_model(model_id, hf_token="", proxy=""):
-    """Kick off `model_manager.py install <download_id>` in the background."""
+    """Kick off `model_manager_v2.py install <download_id>` in the background."""
     if not model_id:
         return _t("❌ 请先选择一个模型", "❌ Select a model first.")
     entry = catalog_by_id(model_id)
     if entry is None:
         return _t("❌ catalog 里没有模型 id：{model}",
                   "❌ Model id not found: {model}", model=model_id)
-    if entry["installed"]:
-        return _t("✅ {label} 已安装，无需下载", "✅ {label} is already installed.",
+    if entry.get("download_installed", entry["installed"]):
+        return _t("✅ {label} 的下载包已安装，无需重新下载",
+                  "✅ {label}'s download package is already installed.",
                   label=entry["label"])
     dl_id = entry.get("download_id")
     if not dl_id:
         return _t("⚠️ {label} 没有 download_id，请手动安装。",
                   "⚠️ {label} has no download_id; install it manually.", label=entry["label"])
-    if MODEL_MANAGER is None:
-        return _t("❌ 找不到 tools/model_manager.py",
-                  "❌ tools/model_manager.py was not found.")
+    if dl_id not in SPEC_PACKAGE_BY_ID:
+        return _t("❌ {label} 没有 model_specs GGUF 下载包。",
+                  "❌ {label} has no model_specs GGUF download package.", label=entry["label"])
+    if SPEC_MODEL_MANAGER is None:
+        return _t("❌ 找不到 webui/model_manager_webui.py",
+                  "❌ webui/model_manager_webui.py was not found.")
 
     # Pass a token to the child so gated/private HF repos don't 401.
     env = os.environ.copy()
@@ -2289,6 +2818,13 @@ def download_model(model_id, hf_token="", proxy=""):
         warn = _t("⚠️ {path} 不完整（缺 {count} 个文件），将覆盖重装。\n\n",
                   "⚠️ {path} is incomplete ({count} files missing); it will be reinstalled.\n\n",
                   path=entry["abs_path"], count=len(entry["missing_files"])) + warn
+    # What this costs, before anything is fetched. A download that cannot fit is
+    # refused outright rather than filling the volume and failing near the end.
+    requirements, blocker = download_requirements(entry)
+    if blocker:
+        _ui_log(_t("下载被拒绝（磁盘空间不足）：{label}",
+                   "download refused (not enough disk space): {label}", label=entry['label']))
+        return requirements + blocker
 
     with _dl_lock:
         rec = _downloads.get(model_id)
@@ -2298,17 +2834,21 @@ def download_model(model_id, hf_token="", proxy=""):
                       label=entry["label"], tail=_read_tail(rec["log"]))
         log = _dl_log_path(model_id)
         logf = open(log, "w", encoding="utf-8", errors="replace")
-        proc = subprocess.Popen(
-            [sys.executable, "-u", MODEL_MANAGER, "install", dl_id,
-             "--models-root", MODELS_ROOT, "--overwrite"],
-            cwd=PROJECT_ROOT, stdout=logf, stderr=subprocess.STDOUT, env=env)
+        try:
+            proc = subprocess.Popen(
+                [sys.executable, "-u", SPEC_MODEL_MANAGER, "install", dl_id,
+                 "--models-root", MODELS_ROOT, "--overwrite"],
+                cwd=PROJECT_ROOT, stdout=logf, stderr=subprocess.STDOUT, env=env)
+        finally:
+            logf.close()
         _downloads[model_id] = {"proc": proc, "log": log}
     _ui_log(_t("开始后台下载 {label}（{dl_id}），日志：{log}",
                "started background download {label} ({dl_id}), log: {log}",
                label=entry['label'], dl_id=dl_id, log=log))
-    return warn + proxy_note + _t(
-        "⏳ 已开始下载 **{label}**（{download_id}）。完成后刷新列表。\n日志：{log}",
-        "⏳ Download started: **{label}** ({download_id}). Refresh the list when complete.\nLog: {log}",
+    return warn + proxy_note + requirements + _t(
+        "⏳ 已开始下载 **{label}**（{download_id}）。完成后列表会自动刷新。\n日志：{log}",
+        "⏳ Download started: **{label}** ({download_id}). The list refreshes when it finishes.\n"
+        "Log: {log}",
         label=entry["label"], download_id=dl_id, log=log)
 
 
@@ -2316,32 +2856,51 @@ def download_status(model_id):
     entry = catalog_by_id(model_id) if model_id else None
     if entry is None:
         return ""
-    if entry["installed"]:
-        return _t("✅ {label} 已安装", "✅ {label} is installed.", label=entry["label"])
     rec = _downloads.get(model_id)
     if rec is None:
+        if entry.get("download_installed", entry["installed"]):
+            return _t("✅ {label} 的下载包已安装",
+                      "✅ {label}'s download package is installed.", label=entry["label"])
+        if entry["installed"]:
+            return _t("✅ {label} 可从已有本地模型加载；如需默认 GGUF 包，请重新下载。",
+                      "✅ {label} can load from existing local files; re-download to install "
+                      "the default GGUF package.", label=entry["label"])
+        # Nothing has been fetched yet, so this is the one place to state the cost
+        # while it can still change the user's mind. The size probe is a network call,
+        # which is why it hangs off this button rather than off selecting a model.
+        requirements, blocker = download_requirements(entry)
+        if blocker:
+            return requirements + blocker
         if entry["incomplete"]:
-            return _t("⚠️ {label} 目录不完整（缺 {count} 个文件），请重新下载。",
-                      "⚠️ {label} is incomplete ({count} files missing). Download it again.",
-                      label=entry["label"], count=len(entry["missing_files"]))
-        return _t("⚪ {label} 未安装，未开始下载", "⚪ {label} is not installed.",
-                  label=entry["label"])
+            return requirements + _t(
+                "⚠️ {label} 目录不完整（缺 {count} 个文件），请重新下载。",
+                "⚠️ {label} is incomplete ({count} files missing). Download it again.",
+                label=entry["label"], count=len(entry["missing_files"]))
+        return requirements + _t("⚪ {label} 未安装，未开始下载", "⚪ {label} is not installed.",
+                                 label=entry["label"])
     code = rec["proc"].poll()
     tail = _read_tail(rec["log"], n=12)
     if code is None:
-        return _t("⏳ 正在下载 {label}… {progress} · 更新于 {time}\n```\n{tail}\n```",
-                  "⏳ Downloading {label}… {progress} · {time}\n```\n{tail}\n```",
-                  label=entry["label"], progress=_download_progress_note(entry),
-                  time=_ts(), tail=tail)
+        return _live_download_prefix(entry) + _t(
+            "⏳ 正在下载 {label}… {progress} · 更新于 {time}\n```\n{tail}\n```",
+            "⏳ Downloading {label}… {progress} · {time}\n```\n{tail}\n```",
+            label=entry["label"], progress=_download_progress_note(entry),
+            time=_ts(), tail=tail)
     if not rec.get("reported"):
         rec["reported"] = True
         _ui_log(_t("{label} 下载进程结束 (exit {code})",
                    "{label} download process ended (exit {code})",
                    label=entry['label'], code=code))
     if code == 0:
-        return _t("✅ {label} 下载完成，请刷新列表。\n```\n{tail}\n```",
-                  "✅ {label} downloaded. Refresh the model list.\n```\n{tail}\n```",
-                  label=entry["label"], tail=tail)
+        # The VRAM estimate outlives the download: it is what decides whether the model
+        # can actually be run, so it must not disappear the moment the bytes land.
+        vram = _vram_shortfall(entry)
+        note = _t("⚠️ **显存不足**：估算需 **≥{need:g}G**，本机为 **{local:g}G**。\n\n",
+                  "⚠️ **Low VRAM**: estimated **≥{need:g} GB**, detected **{local:g} GB**.\n\n",
+                  need=vram[0], local=vram[1]) if vram else ""
+        return note + _t("✅ {label} 下载完成。\n```\n{tail}\n```",
+                         "✅ {label} downloaded.\n```\n{tail}\n```",
+                         label=entry["label"], tail=tail)
     return _t("❌ {label} 下载失败（exit {code}）。\n```\n{tail}\n```",
               "❌ {label} download failed (exit {code}).\n```\n{tail}\n```",
               label=entry["label"], code=code, tail=tail)
@@ -2352,15 +2911,111 @@ def _download_running(model_id):
     return rec is not None and rec["proc"].poll() is None
 
 
+def _download_blockers(entry, model_id):
+    """Why this entry cannot be downloaded right now, or "" if it can."""
+    if entry.get("download_installed", entry["installed"]):
+        return _t("✅ {label} 的下载包已安装，无需重新下载",
+                  "✅ {label}'s download package is already installed.",
+                  label=entry["label"])
+    if not entry.get("download_id"):
+        return _t("⚠️ {label} 没有 download_id，请手动安装。",
+                  "⚠️ {label} has no download_id; install it manually.", label=entry["label"])
+    if entry.get("download_id") not in SPEC_PACKAGE_BY_ID:
+        return _t("⚠️ {label} 没有 model_specs GGUF 下载包，请手动安装。",
+                  "⚠️ {label} has no model_specs GGUF download package; install it manually.",
+                  label=entry["label"])
+    if SPEC_MODEL_MANAGER is None:
+        return _t("❌ 找不到 webui/model_manager_webui.py",
+                  "❌ webui/model_manager_webui.py was not found.")
+    if _download_running(model_id):
+        return _t("⏳ {label} 已在后台下载中…", "⏳ {label} is already downloading…",
+                  label=entry["label"])
+    return ""
+
+
+def download_proposal(model_id):
+    """(message, can_confirm) for the Download button — the decision, not its rendering.
+
+    Weights run to 17 GB and a download cannot be undone once the bytes are on the disk,
+    so the button that used to commit now only proposes. `can_confirm` is False whenever
+    there is nothing to confirm: already installed, already running, or provably out of
+    disk. Kept free of Gradio types so the decision is testable on its own."""
+    if not model_id:
+        return _t("❌ 请先选择一个模型", "❌ Select a model first."), False
+    entry = catalog_by_id(model_id)
+    if entry is None:
+        return _t("❌ catalog 里没有模型 id：{model}", "❌ Model id not found: {model}",
+                  model=model_id), False
+    stop = _download_blockers(entry, model_id)
+    if stop:
+        return stop, False
+
+    requirements, blocker = download_requirements(entry)
+    if blocker:
+        return requirements + blocker, False
+
+    # The disk and memory alarms are already in `requirements`; these are the rest.
+    warnings = ""
+    if entry["incomplete"]:
+        warnings += _t("⚠️ {path} 不完整（缺 {count} 个文件），将覆盖重装。\n\n",
+                       "⚠️ {path} is incomplete ({count} files missing); it will be reinstalled.\n\n",
+                       path=entry["abs_path"], count=len(entry["missing_files"]))
+    if not hf_token_present():
+        warnings += _t("⚠️ 未检测到 HF token，受限模型可能返回 401。\n\n",
+                       "⚠️ No HF token detected; gated models may return 401.\n\n")
+    alarmed = "🚨" in requirements
+    ask = _t("🚨 **有告警**（见上）。确定仍要下载 **{label}**？确定就点『✅ 确认下载』，"
+             "否则点『✖️ 取消』。",
+             "🚨 **Alarms raised** (above). Download **{label}** anyway? Click ✅ Confirm if you "
+             "really want it, otherwise ✖️ Cancel.", label=entry["label"]) if alarmed else _t(
+             "❓ 确认下载 **{label}**？点『✅ 确认下载』开始，或点『✖️ 取消』放弃。",
+             "❓ Download **{label}**? Click ✅ Confirm to start, or ✖️ Cancel to abandon it.",
+             label=entry["label"])
+    return warnings + requirements + ask, True
+
+
+def download_preview(model_id):
+    """Click handler: the proposal, plus visibility for the confirm/cancel pair."""
+    message, can_confirm = download_proposal(model_id)
+    return message, gr.update(visible=can_confirm), gr.update(visible=can_confirm)
+
+
+def download_cancel(model_id):
+    """Cancel button: nothing was started, so this only clears the prompt."""
+    entry = catalog_by_id(model_id) if model_id else None
+    label = entry["label"] if entry else model_id
+    _ui_log(_t("已取消下载：{label}", "download cancelled: {label}", label=label))
+    return (_t("✖️ 已取消，未下载 {label}。", "✖️ Cancelled; {label} was not downloaded.",
+               label=label),
+            gr.update(visible=False), gr.update(visible=False))
+
+
 def download_start(model_id, hf_token="", proxy=""):
-    """Click handler: kick off the download and arm the auto-refresh timer."""
+    """Confirm button: kick off the download and arm the auto-refresh timer."""
     msg = download_model(model_id, hf_token, proxy)
-    return msg, gr.Timer(active=_download_running(model_id))
+    return (msg, gr.Timer(active=_download_running(model_id)),
+            gr.update(visible=False), gr.update(visible=False))
+
+
+def _model_choice_updates():
+    """gr.update(choices=...) for every tab's model dropdown, in TAB_SPECS order.
+
+    Only choices are rebuilt, never values: the ids are unchanged, so each tab keeps
+    whatever the user had selected while the stale "· not installed" suffix in the
+    labels goes away."""
+    return [gr.update(choices=choices_for_tasks(tasks)) for tasks in TAB_SPECS]
 
 
 def download_status_tick(model_id):
-    """Timer tick: refresh status; stop the timer once the download is idle."""
-    return download_status(model_id), gr.Timer(active=_download_running(model_id))
+    """Timer tick: refresh status; stop the timer once the download is idle.
+
+    Install state is baked into the dropdown labels when the page is built, so a
+    finished download used to leave every tab still reading "· not installed" until
+    the user clicked Refresh. The tick that observes the process exit rebuilds the
+    choices instead."""
+    running = _download_running(model_id)
+    updates = [gr.update()] * len(TAB_SPECS) if running else _model_choice_updates()
+    return (download_status(model_id), gr.Timer(active=running), *updates)
 
 
 def _gguf_entry(model_id, require_installed=True):
@@ -2375,82 +3030,43 @@ def _gguf_entry(model_id, require_installed=True):
     return entry, ""
 
 
-def _gguf_output_path(entry):
+def _existing_gguf_path(entry):
+    """The GGUF this entry would actually load, or None.
+
+    Mirrors find_directory_gguf() in src/framework/assets/tensor_source.cpp for
+    ordinary directories, and also follows downloaded package manifests whose
+    GGUF is nested under the install root."""
     model_path = entry["abs_path"]
     if os.path.isfile(model_path) and model_path.lower().endswith(".gguf"):
         return model_path
-    root = model_path if os.path.isdir(model_path) else os.path.dirname(model_path)
-    return os.path.join(root, "model.gguf")
-
-
-def _gguf_tensor_entrypoint(model_dir):
-    """Return a single-file or sharded safetensors entry point in model_dir."""
-    for name in ("model.safetensors.index.json", "model.safetensors"):
-        candidate = os.path.join(model_dir, name)
-        if os.path.isfile(candidate):
-            return candidate
-    return None
-
-
-def _gguf_conversion_inputs(entry):
-    """Build the converter's ordered (namespace, weights) input list."""
-    if entry["family"] not in GGUF_WEBUI_CONVERTIBLE_FAMILIES:
-        return []
-
-    model_path = entry["abs_path"]
-    if os.path.isfile(model_path):
-        lower = model_path.lower()
-        if lower.endswith(".safetensors") or lower.endswith(".safetensors.index.json"):
-            return [("", model_path)]
-        return []
-
-    # Qwen3-TTS is a composite package. Its GGUF package spec requires both
-    # tensor sources under the exact namespaces below.
-    if entry["family"] == "qwen3_tts":
-        model_weights = _gguf_tensor_entrypoint(model_path)
-        speech_weights = _gguf_tensor_entrypoint(os.path.join(model_path, "speech_tokenizer"))
-        if model_weights and speech_weights:
-            return [
-                ("model_weights", model_weights),
-                ("speech_tokenizer_weights", speech_weights),
-            ]
-        return []
-
-    source = _gguf_tensor_entrypoint(model_path)
-    return [("", source)] if source else []
-
-
-def _gguf_conversion_unavailable(entry):
-    family = entry["family"]
-    if family not in GGUF_NATIVE_FAMILIES:
-        return _t("当前模型后端暂不支持原生 GGUF。",
-                  "This model backend does not currently support native GGUF.")
-    if family not in GGUF_WEBUI_CONVERTIBLE_FAMILIES:
-        return _t("当前复合模型暂不能在 WebUI 自动转换。",
-                  "This composite model cannot yet be converted automatically in the WebUI.")
-    return ""
+    if not os.path.isdir(model_path):
+        return None
+    default = os.path.join(model_path, "model.gguf")
+    if os.path.isfile(default):
+        return default
+    declared = _declared_package_gguf_path(entry)
+    if declared is not None:
+        return declared
+    found = sorted(f for f in os.listdir(model_path)
+                   if f.lower().endswith(".gguf") and os.path.isfile(os.path.join(model_path, f)))
+    # Several GGUFs with no model.gguf are ambiguous for the loader too; it refuses
+    # to guess, so the WebUI must not claim one of them is what will load.
+    return os.path.join(model_path, found[0]) if len(found) == 1 else None
 
 
 def gguf_status(model_id):
     entry, error = _gguf_entry(model_id, require_installed=False)
     if entry is None:
         return f"⚪ {error}"
-    unavailable = _gguf_conversion_unavailable(entry)
-    if unavailable:
-        return f"⚠️ {unavailable}"
-    if not entry["installed"]:
-        return _t("🧊 可转换，但模型未完整安装。",
-                  "🧊 Convertible, but the model is not fully installed.")
-    output = _gguf_output_path(entry)
-    converter = _find_gguf_exe()
-    if os.path.isfile(output):
-        return _t("🧊 已有GGUF，将优先加载该模型。", "🧊 GGUF is available and will be loaded first.")
-    if converter is None:
-        return _t("⚠️ 找不到转换器。", "⚠️ Converter not found.")
-    inputs = _gguf_conversion_inputs(entry)
-    if not inputs:
-        return _t("⚠️ 未找到可转换的模型权重。", "⚠️ No convertible model weights found.")
-    return _t("🧊 可转换。", "🧊 Ready to convert.")
+    existing = _existing_gguf_path(entry)
+    if existing is not None:
+        return _t("🧊 已有GGUF（`{name}`），将优先加载该模型。",
+                  "🧊 GGUF is available (`{name}`) and will be loaded first.",
+                  name=os.path.basename(existing))
+    if entry.get("download_id") in SPEC_PACKAGE_BY_ID:
+        return _t("🧊 下载将安装 model_specs 中声明的 GGUF 包。",
+                  "🧊 Download will install the GGUF package declared in model_specs.")
+    return _t("⚠️ 暂无 GGUF；请手动安装。", "⚠️ No GGUF yet; install it manually.")
 
 
 def _gguf_inspection_summary(output, text):
@@ -2489,8 +3105,8 @@ def inspect_gguf(model_id):
     entry, error = _gguf_entry(model_id)
     if entry is None:
         return f"❌ {error}"
-    output = _gguf_output_path(entry)
-    if not os.path.isfile(output):
+    output = _existing_gguf_path(entry)
+    if output is None:
         return _t("⚠️ 暂无 GGUF。", "⚠️ No GGUF yet.")
     converter = _find_gguf_exe()
     if converter is None:
@@ -2506,99 +3122,6 @@ def inspect_gguf(model_id):
         return _t("❌ 检查失败（exit {code}）。", "❌ Inspection failed (exit {code}).", code=result.returncode)
     _ui_log(_t("检查 GGUF：{output}", "checking GGUF: {output}", output=output))
     return _gguf_inspection_summary(output, result.stdout)
-
-
-def convert_model_to_gguf(model_id, weight_type, progress=gr.Progress()):
-    entry, error = _gguf_entry(model_id)
-    if entry is None:
-        return f"❌ {error}"
-    unavailable = _gguf_conversion_unavailable(entry)
-    if unavailable:
-        return f"❌ {unavailable}"
-    output = _gguf_output_path(entry)
-    if os.path.isfile(output):
-        return _t("⚠️ GGUF 已存在；请先检查或删除。", "⚠️ GGUF already exists; inspect or delete it first.")
-    converter = _find_gguf_exe()
-    if converter is None:
-        return _t("❌ 找不到 `{name}`；已检查开发构建和 portable 的 gpu/cpu 目录。",
-                  "❌ {name} was not found in development or portable gpu/cpu paths.", name=GGUF_EXE_NAME)
-    inputs = _gguf_conversion_inputs(entry)
-    if not inputs:
-        return _t("❌ 未找到可自动转换的模型权重。", "❌ No convertible model weights found.")
-    if weight_type not in GGUF_TYPES:
-        return _t("❌ 不支持的 GGUF 类型：{type}", "❌ Unsupported GGUF type: {type}", type=weight_type)
-
-    root = entry["abs_path"] if os.path.isdir(entry["abs_path"]) else os.path.dirname(inputs[0][1])
-    cmd = [converter]
-    for namespace, source in inputs:
-        cmd.extend(["--input", f"{namespace}={source}" if namespace else source])
-    cmd.extend(["--root", root, "--output", output,
-                "--type", weight_type, "--family", entry["family"]])
-    progress(0, desc=_t("正在转换 GGUF…", "Converting GGUF…"))
-    _ui_log(_t("开始转换 GGUF：{label} ({weight_type})",
-               "converting GGUF: {label} ({weight_type})",
-               label=entry['label'], weight_type=weight_type))
-    try:
-        result = subprocess.run(cmd, cwd=PROJECT_ROOT, capture_output=True, text=True,
-                                encoding="utf-8", errors="replace", timeout=7200)
-    except subprocess.TimeoutExpired:
-        return _t("❌ GGUF 转换超过 2 小时，已停止。", "❌ GGUF conversion exceeded two hours and was stopped.")
-    except Exception as exc:
-        return _t("❌ 无法启动 GGUF 转换：{error}", "❌ Could not start GGUF conversion: {error}", error=exc)
-
-    if result.returncode != 0 or not os.path.isfile(output):
-        _ui_log(_t("GGUF 转换失败：{label} (exit {code})",
-                   "GGUF conversion failed: {label} (exit {code})",
-                   label=entry['label'], code=result.returncode))
-        stdout = (result.stdout or "").strip()
-        stderr = (result.stderr or "").strip()
-        details = []
-        if stdout:
-            details.append(f"stdout:\n{stdout}")
-        if stderr:
-            details.append(f"stderr:\n{stderr}")
-        process_output = "\n\n".join(details) or _t("（转换器没有输出）", "(The converter produced no output.)")
-        return _t(
-            "❌ 转换失败（exit {code}）。\n\n命令：\n```text\n{command}\n```\n\n详细信息：\n```text\n{output}\n```",
-            "❌ Conversion failed (exit {code}).\n\nCommand:\n```text\n{command}\n```\n\nDetails:\n```text\n{output}\n```",
-            code=result.returncode, command=subprocess.list2cmdline(cmd), output=process_output)
-
-    stopped = False
-    with _proc_lock:
-        if _loaded_id == model_id and _server_proc is not None and _server_proc.poll() is None:
-            _stop_server()
-            stopped = True
-    _ui_log(_t("GGUF 转换完成：{label} → {output}",
-               "GGUF conversion done: {label} → {output}",
-               label=entry['label'], output=output))
-    stop_note = (_t("请点『加载模型』。", "Click Load.")
-                 if stopped else
-                 _t("点『加载模型』即可。", "Click Load to use it."))
-    return _t("✅ 转换成功。{note}", "✅ Conversion complete. {note}", note=stop_note)
-
-
-def delete_gguf(model_id):
-    entry, error = _gguf_entry(model_id)
-    if entry is None:
-        return f"❌ {error}", server_status()
-    output = _gguf_output_path(entry)
-    if not os.path.isfile(output):
-        return _t("⚠️ 暂无 GGUF。", "⚠️ No GGUF to delete."), server_status()
-    with _proc_lock:
-        if _loaded_id == model_id and _server_proc is not None and _server_proc.poll() is None:
-            _stop_server()
-        elif server_alive() and model_id in loaded_ids():
-            return _t("⚠️ 外部 server 正在使用该 GGUF；请先关闭它再删除。",
-                      "⚠️ An external server is using this GGUF. Stop it before deleting."), server_status()
-    temporary = output + ".tmp"
-    try:
-        os.remove(output)
-        if os.path.isfile(temporary):
-            os.remove(temporary)
-    except OSError as exc:
-        return _t("❌ 删除 GGUF 失败：{error}", "❌ Could not delete GGUF: {error}", error=exc), server_status()
-    _ui_log(_t("删除 GGUF：{output}", "deleting GGUF: {output}", output=output))
-    return _t("✅ 已删除：`{path}`", "✅ Deleted: `{path}`", path=output), server_status()
 
 
 # --- task handlers ---------------------------------------------------------
@@ -3452,9 +3975,12 @@ def do_vc(model, source_audio, target_upload, builtin_voice, seed,
         options = _merged_options(prof, adv_values, adv_options)
 
         source_audio = _ensure_wav(source_audio)
-        # 同一 seed 用于所有分段，保证各段结果一致可复现。
-        seed, seed_note = _resolve_seed(seed)
-        req = {"seed": seed}
+        seed_note = ""
+        req = {}
+        if prof.get("send_seed", True):
+            # 同一 seed 用于所有分段，保证各段结果一致可复现。
+            seed, seed_note = _resolve_seed(seed)
+            req["seed"] = seed
         voice_path = target_upload or (
             os.path.join(PROMPTS_DIR, builtin_voice)
             if builtin_voice and builtin_voice != "(none)" else None)
@@ -3986,7 +4512,7 @@ with gr.Blocks(title="audio.cpp WebUI") as demo:
 
     # ---- 每个标签页共用的“模型管理”卡片、接线与高级参数渲染 ----
     def _model_manager_block(task_label, tasks):
-        """标准“模型管理”卡片：模型下拉、加载/下载与 GGUF 操作 + 状态区。
+        """标准“模型管理”卡片：模型下拉、加载/下载与 GGUF 检查 + 状态区。
         返回组件 dict；接线见 _wire_model_manager（刷新按钮统一接在文件末尾）。"""
         choices = choices_for_tasks(tasks)
         with gr.Group():
@@ -4005,8 +4531,8 @@ with gr.Blocks(title="audio.cpp WebUI") as demo:
                     gr.Button("🔄 刷新列表", variant="primary", size="lg", min_width=100),
                     value=("🔄 刷新列表", "🔄 Refresh"))
                 dl_btn = _localized(
-                    gr.Button("⬇️ 下载模型", variant="primary", size="lg", min_width=100),
-                    value=("⬇️ 下载模型", "⬇️\u00a0Download"))
+                    gr.Button("⬇️ (Re) 下载", variant="primary", size="lg", min_width=100),
+                    value=("⬇️ (Re) 下载", "⬇️\u00a0(Re) Download"))
                 dl_stat_btn = _localized(
                     gr.Button("📊 下载进度", variant="primary", size="lg", min_width=100),
                     value=("📊 下载进度", "📊 Progress"))
@@ -4015,44 +4541,52 @@ with gr.Blocks(title="audio.cpp WebUI") as demo:
                     value=("🧹 释放显存", "🧹 Unload"))
             load_status = gr.Markdown("")
             dl_status = gr.Markdown("")
-            with _localized(gr.Accordion("🧊 GGUF 工具（转换 / 检查 / 删除）", open=False),
-                            label=("🧊 GGUF 工具（转换 / 检查 / 删除）",
-                                   "🧊 GGUF tools (convert / inspect / delete)")):
+            # Hidden until "⬇️ (Re) Download" has stated what the download costs; a
+            # multi-GB fetch is not something a single click should commit to.
+            with gr.Row(elem_classes="mm-btn-row"):
+                dl_confirm_btn = _localized(
+                    gr.Button("✅ 确认 (Re) 下载", variant="primary", size="lg",
+                              min_width=100, visible=False),
+                    value=("✅ 确认 (Re) 下载", "✅ Confirm (Re) Download"))
+                dl_cancel_btn = _localized(
+                    gr.Button("✖️ 取消", variant="secondary", size="lg",
+                              min_width=100, visible=False),
+                    value=("✖️ 取消", "✖️ Cancel"))
+            with _localized(gr.Accordion("🧊 GGUF 检查", open=False),
+                            label=("🧊 GGUF 检查", "🧊 GGUF inspect")):
                 with gr.Row(elem_classes="mm-btn-row gguf-btn-row"):
-                    gguf_type = _localized(gr.Dropdown(
-                        label="类型", show_label=False, choices=list(GGUF_TYPES), value="q8_0", scale=1, min_width=80),
-                        label=("类型", "Type"))
-                    gguf_convert_btn = _localized(
-                        gr.Button("🧊 转换", variant="secondary", scale=1, min_width=90),
-                        value=("🧊 转换", "🧊 Convert"))
                     gguf_inspect_btn = _localized(
                         gr.Button("🔎 检查", variant="secondary", scale=1, min_width=90),
                         value=("🔎 检查", "🔎 Inspect"))
-                    gguf_delete_btn = _localized(
-                        gr.Button("🗑️ 删除", variant="stop", scale=1, min_width=90),
-                        value=("🗑️ 删除", "🗑️ Delete"))
                 gguf_message = gr.Markdown(gguf_status(model.value))
             timer = gr.Timer(3, active=False)
         return {"model": model, "load_btn": load_btn, "refresh_btn": refresh_btn,
                 "dl_btn": dl_btn, "dl_stat_btn": dl_stat_btn, "unload_btn": unload_btn,
+                "dl_confirm_btn": dl_confirm_btn, "dl_cancel_btn": dl_cancel_btn,
                 "load_status": load_status, "dl_status": dl_status, "timer": timer,
-                "gguf_type": gguf_type, "gguf_convert_btn": gguf_convert_btn,
-                "gguf_inspect_btn": gguf_inspect_btn, "gguf_delete_btn": gguf_delete_btn,
+                "gguf_inspect_btn": gguf_inspect_btn,
                 "gguf_status": gguf_message}
 
     def _wire_model_manager(mm, tasks, hint):
         mm["load_btn"].click(_make_load_handler(tasks), mm["model"],
                              [mm["load_status"], status])
-        mm["dl_btn"].click(download_start, [mm["model"], hf_token, proxy],
-                           [mm["dl_status"], mm["timer"]])
-        mm["timer"].tick(download_status_tick, mm["model"],
-                         [mm["dl_status"], mm["timer"]])
+        # Download only proposes; the confirm button is what actually commits.
+        mm["dl_btn"].click(download_preview, mm["model"],
+                           [mm["dl_status"], mm["dl_confirm_btn"], mm["dl_cancel_btn"]])
+        mm["dl_confirm_btn"].click(
+            download_start, [mm["model"], hf_token, proxy],
+            [mm["dl_status"], mm["timer"], mm["dl_confirm_btn"], mm["dl_cancel_btn"]])
+        mm["dl_cancel_btn"].click(download_cancel, mm["model"],
+                                  [mm["dl_status"], mm["dl_confirm_btn"], mm["dl_cancel_btn"]])
+        # Switching model mid-prompt would otherwise leave a confirm button armed for
+        # whatever was selected when it appeared.
+        mm["model"].change(lambda: (gr.update(visible=False), gr.update(visible=False)),
+                           None, [mm["dl_confirm_btn"], mm["dl_cancel_btn"]])
+        # The timer tick is wired further down, where the per-tab dropdowns it has to
+        # refresh on completion are all in scope.
         mm["dl_stat_btn"].click(download_status, mm["model"], mm["dl_status"])
         mm["unload_btn"].click(unload_model, None, [mm["load_status"], status])
-        mm["gguf_convert_btn"].click(convert_model_to_gguf,
-                                      [mm["model"], mm["gguf_type"]], mm["gguf_status"])
         mm["gguf_inspect_btn"].click(inspect_gguf, mm["model"], mm["gguf_status"])
-        mm["gguf_delete_btn"].click(delete_gguf, mm["model"], [mm["gguf_status"], status])
         mm["model"].change(model_hint_for, mm["model"], hint)
         mm["model"].change(gguf_status, mm["model"], mm["gguf_status"])
 
@@ -4499,9 +5033,6 @@ with gr.Blocks(title="audio.cpp WebUI") as demo:
 
         _wire_model_manager(sep_mm, SEP_TASKS, sep_hint)
         sep_btn.click(
-            lambda: (*(gr.update(value=None, visible=False)
-                       for _ in range(MAX_SEP_STEMS)), None, ""),
-            None, [*sep_stems, sep_files, sep_msg]).then(
             do_sep, [sep_model, sep_audio], [*sep_stems, sep_files, sep_msg])
 
     # ---------------- 音频分析 (vad / diar / align) ----------------
@@ -4659,8 +5190,13 @@ with gr.Blocks(title="audio.cpp WebUI") as demo:
         tts_hint, asr_hint, gen_hint, vc_hint, sep_hint, ana_hint, vdes_hint,
         asr_stream,
     ]
+    # 下载进度轮询要在下载结束时刷新各页下拉（安装状态写在下拉标签里），
+    # 因此和「刷新列表」一样放在这里 —— 此时各页下拉才都在作用域内。
+    _model_dropdowns = [tts_model, asr_model, gen_model, vc_model, sep_model, ana_model, vdes_model]
     for _mm in (tts_mm, asr_mm, gen_mm, vc_mm, sep_mm, ana_mm, vdes_mm):
         _mm["refresh_btn"].click(refresh, None, _refresh_outputs)
+        _mm["timer"].tick(download_status_tick, _mm["model"],
+                          [_mm["dl_status"], _mm["timer"], *_model_dropdowns])
     # 顶部状态行在建界面时只求值一次，浏览器刷新会看到那份静态初值（即使模型
     # 已加载也显示“server 未运行”）。server 本身就是状态的唯一真相源
     # （/health + /v1/models），每次页面加载重新探测即可，无需额外状态文件。

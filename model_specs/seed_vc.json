@@ -1,5 +1,105 @@
 {
   "family": "seed_vc",
+  "display_name": "Seed-VC",
+  "description": "Zero-shot voice conversion and singing voice conversion model for transferring timbre and style from reference audio, with low-latency realtime conversion and optional lightweight fine-tuning.",
+  "category": "voice_conversion",
+  "status": "supported",
+  "tasks": [
+    "vc",
+    "svc"
+  ],
+  "modes": [
+    "offline"
+  ],
+  "languages": [
+    "language_agnostic"
+  ],
+  "capabilities": {
+    "vc": [
+      "speaker_reference"
+    ],
+    "svc": [
+      "speaker_reference",
+      "singing"
+    ]
+  },
+  "runtime": {
+    "tags": [
+      "gguf"
+    ]
+  },
+  "ui": {
+    "recommended_package": "seed_vc_mlx_q8_0",
+    "tags": [
+      "VC",
+      "GGUF"
+    ],
+    "docs": [
+      "docs/models/seed_vc.md",
+      "docs/audio_tools.md",
+      "docs/gguf.md"
+    ]
+  },
+  "package_defaults": {
+    "download": {
+      "kind": "huggingface_snapshot",
+      "repo": "audio-cpp/audio.cpp-gguf",
+      "revision": "main",
+      "gated": false
+    }
+  },
+  "packages": [
+    {
+      "id": "seed_vc_mlx_q8_0",
+      "display_name": "SeedVC-MLX Q8_0 GGUF",
+      "default": true,
+      "format": "gguf",
+      "precision": "q8_0",
+      "target_directory": "SeedVC-MLX-GGUF",
+      "files": [
+        "SeedVC-MLX-GGUF/seed-vc-mlx-q8_0.gguf"
+      ],
+      "strip_prefix": "SeedVC-MLX-GGUF"
+    },
+    {
+      "id": "seed_vc_mlx_f16",
+      "display_name": "SeedVC-MLX F16 GGUF",
+      "format": "gguf",
+      "precision": "f16",
+      "target_directory": "SeedVC-MLX-GGUF",
+      "files": [
+        "SeedVC-MLX-GGUF/seed-vc-mlx-f16.gguf"
+      ],
+      "strip_prefix": "SeedVC-MLX-GGUF"
+    },
+    {
+      "id": "seed_vc_mlx_orig",
+      "display_name": "SeedVC-MLX Original-Dtype GGUF",
+      "format": "gguf",
+      "precision": "orig",
+      "target_directory": "SeedVC-MLX-GGUF",
+      "files": [
+        "SeedVC-MLX-GGUF/seed-vc-mlx-orig.gguf"
+      ],
+      "strip_prefix": "SeedVC-MLX-GGUF"
+    },
+    {
+      "id": "seed_vc_mlx_safetensors",
+      "display_name": "SeedVC-MLX Safetensors",
+      "format": "safetensors",
+      "precision": "native",
+      "target_directory": "SeedVC-MLX",
+      "files": [
+        "seed_vc_manifest.json",
+        "v2/ar.safetensors",
+        "v2/cfm.safetensors"
+      ],
+      "download": {
+        "kind": "huggingface_snapshot",
+        "repo": "mlx-community/SeedVC-MLX"
+      }
+    }
+  ],
   "sources": [
     {
       "format": "gguf",
