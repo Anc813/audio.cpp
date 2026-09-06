@@ -50,6 +50,7 @@ Status labels:
 | `Pass` | Covered by the path-test matrix with acceptable output. |
 | `Pass (TTS + clone)` | Both no-reference TTS and reference-audio voice cloning run successfully. |
 | `Pass (drift)` | Loads and runs, with known acceptable output drift. |
+| `Pass (bit-identical)` | Loads and runs, reproducing the F32/F16 reference timestamps exactly (0-sample boundary diff). |
 | `Pass (ASR match, drift)` | TTS output has similarity/frame drift but ASR transcript remains usable. |
 | `No (...)` | Known unsupported, failing, or too much output drift. |
 | `---` | Not tested in the current GGUF path-test matrix. |
@@ -69,19 +70,25 @@ Status labels:
 | `htdemucs` | Done | Pass | --- | Pass | Pass (drift) |
 | `hviske_asr` | Done | Pass | --- | --- | Pass |
 | `inflect_v2` | Done | Pass | Pass | --- | --- |
-| `index_tts2` | Done | Pass | Pass | Pass (drift) | Pass (ASR match, drift) |
-| `irodori_tts` | Done | Pass | --- | Pass | Pass (drift) |
+| `index_tts2` | Done (v2 + v2.5 variant) | Pass | Pass | Pass (drift) | Pass (ASR match, drift) |
+| `irodori_tts` | Done | Pass | --- | Pass | Pass (ASR match, drift) |
 | `kroko_asr` | Done | Pass | --- | --- | Pass |
+| `magpie_tts` | Done | --- | Pass | --- | Pass |
 | `marblenet_vad` | Bundled (tiny model) | Pass | --- | --- | --- |
+| `meanvc2` | Done | --- | --- | Pass | --- |
 | `mel_band_roformer` | Done | Pass | --- | Pass (drift) | Pass (drift) |
 | `miocodec` | Done | Pass | Pass | Pass (drift) | Pass (drift) |
 | `miotts` | Done | Pass | Pass | Pass (drift) | Pass (ASR match, drift) |
+| `mms_forced_aligner` | Done | Pass | --- | Pass | Pass (bit-identical) |
 | `moss_tts_local` | Done | Pass | --- | Pass | Pass (ASR match, drift) |
 | `moss_tts_nano` | Done | Pass | --- | Pass | Pass (ASR match, drift) |
+| `muscriptor` | Done | Pass | Pass | --- | --- |
 | `nemotron_asr` | Done | Pass | --- | Pass | Pass (minor filler drift) |
+| `neutts` | Done | Pass | --- | Pass | --- |
 | `omnivoice` | Done | Pass | --- | Pass (drift) | Pass (drift) |
 | `outetts` | Done | Pass (TTS + clone) | --- | --- | Pass (TTS + clone) |
 | `parakeet_tdt` | Done | Pass | Pass | Pass | Pass |
+| `personaplex` | Done | --- | --- | --- | Pass |
 | `pocket_tts` | Done | Pass | --- | Pass | Pass (drift) |
 | `qwen3_asr` | Done | Pass | --- | Pass | Pass |
 | `qwen3_forced_aligner` | Done | Pass | --- | Pass | Pass |
@@ -90,10 +97,12 @@ Status labels:
 | `qwen3_tts` voice design | Done | Pass | --- | Pass (ASR match, drift) | Pass (ASR match, drift) |
 | `rvc` | Done | --- | --- | Pass | --- |
 | `seed_vc` | Done | Pass | --- | Pass (drift) | Pass (drift) |
+| `sopro_tts` | Done | Pass | --- | Pass | Pass |
+| `soprano_tts` | Done | Pass | --- | Pass | Pass (drift) |
 | `silero_vad` | Skip (tiny model) | --- | --- | --- | --- |
 | `sortformer_diar` | Done | Pass | --- | Pass | Pass |
 | `stable_audio` | Done | Pass | --- | Pass (drift) | Pass (drift) |
-| `supertonic` | Done | Pass | Pass | --- | No (unsupported weight dtype) |
+| `supertonic` | Done | Pass | Pass | Pass | No (Q8 blockers unresolved) |
 | `vevo2` | Done | Pass | Pass | Pass (drift) | No (mixed route drift; speech ASR match) |
 | `vibevoice` | Done | Pass | --- | Pass | Pass (drift) |
 | `vibevoice_asr` | Done | Pass | --- | Pass | Pass |
@@ -104,6 +113,8 @@ Additional lower-bit checks:
 
 | Family | Format | Tested |
 |---|---|---|
+| `meanvc2` | `q4_k` | Pass |
+| `personaplex` | `q4_k` | Pass |
 | `voxtral_realtime` | `q4_k` | Pass (quick CUDA check; transcripts match Q8 except one capitalization-only difference) |
 
 Q8 packaging notes:
@@ -115,12 +126,22 @@ Q8 packaging notes:
   tensors in Q8 in addition to the default converter selection. `conditioner.embed`,
   `cond_embed`, and Mimi conv tensors are not forced to Q8 because tested outputs
   drifted or the current conv path casts quantized conv weights back to F32.
+- `dots_tts` Q8 keeps the vocoder in 16-bit storage and folds vocoder
+  weight-norm conv tensors at conversion time. Use
+  `--keep-type 'vocoder/*=f16' --fold-weight-norm 'vocoder/*'` for both SOAR
+  and MeanFlow Q8 conversion so the flow/LLM path is quantized while the
+  vocoder stays in the tested dtype with direct conv weights.
 - `qwen3_tts` Q8 should keep speaker-sensitive components in their original
   16-bit type. The tested Base Q8 package quantizes the talker transformer and
   projections, talker code-predictor heads, and speech-tokenizer encoder/decoder
   projection or linear weights, while leaving the speaker encoder, lookup, and
   codebook-sensitive tensors unquantized. Quantizing those speaker-side tensors
   can produce long-form quality problems such as large silence.
+- `supertonic` F16 is intentionally mixed type. Keep duration predictor,
+  vocoder, non-weight tensors, embeddings, codebook tensors, and norm tensors in
+  F32; convert only compatible projection weights to F16. Supertonic Q8 is not
+  currently supported: broader Q8 packages still hit CUDA Q8 copy/layout
+  blockers in text/vector graph paths, so the Q8 blocker is not fully solved.
 - `voxtral_realtime` also has a tested `q4_k` package. In a quick CUDA path
   check it was smaller and faster than Q8_0, while transcript output matched
   Q8_0 except for one capitalization-only difference.

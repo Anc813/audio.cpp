@@ -91,7 +91,7 @@ These sampling controls are shared by the Qwen3 TTS Base, VoiceDesign, and Custo
 | `--top-k` | integer | `50` | Main talker top-k. |
 | `--top-p` | float | `1.0` | Main talker top-p. |
 | `--repetition-penalty` | float | `1.05` | Main talker repetition penalty. |
-| `--request-option subtalker_do_sample=true|false` | bool | `true` | Subtalker sampling. |
+| `--request-option subtalker_do_sample=true\|false` | bool | `true` | Subtalker sampling. |
 | `--request-option subtalker_temperature=<float>` | float | `0.9` | Subtalker temperature. |
 | `--request-option subtalker_top_k=<n>` | integer | `50` | Subtalker top-k. |
 | `--request-option subtalker_top_p=<float>` | float | `1.0` | Subtalker top-p. |
@@ -207,6 +207,7 @@ audiocpp_cli --task asr --family qwen3_asr --model models/Qwen3-ASR-0.6B-GGUF/qw
 | `--audio-chunk-mode` | `auto`, `fixed`, `vad`, `none` | `auto` | Let the model choose, force fixed chunks, force internal VAD chunks, or disable model-side chunking. |
 | `--text-out` | TXT path | not set | Transcript output. The transcript is also printed to stdout. |
 | `--words-out` | JSON path | not set | Word timestamp output. Requires `qwen3_asr.forced_aligner_model_path`. |
+| `--request-option clamp_timestamps_to_audio=true\|false` | bool | `false` | Opt-in guard for `--words-out`: keep repaired forced-aligner word spans inside each local audio chunk. Default preserves existing timestamp repair behavior. |
 | `--session-option qwen3_asr.forced_aligner_model_path=<path>` | model directory | not set | Qwen3 Forced Aligner model used to generate word timestamps after ASR. |
 | `--session-option qwen3_asr.vad_model_path=<path>` | model directory | `assets/framework/models/silero_vad` | Optional internal VAD model override for timestamp-safe chunking. |
 
@@ -239,12 +240,13 @@ audiocpp_cli --task align --family qwen3_forced_aligner --model models/Qwen3-For
 | `--language` | language code | required | Transcript language. |
 | `--audio-chunk-mode` | `auto`, `none` | `auto` | Standalone forced alignment runs one audio/transcript pair. `fixed` and `vad` are rejected because transcript chunk boundaries would be ambiguous. |
 | `--words-out` | JSON path | not set | Word timestamp output. |
+| `--request-option clamp_timestamps_to_audio=true\|false` | bool | `false` | Opt-in guard for word timestamps: keep repaired spans inside the local audio input. Default preserves existing timestamp repair behavior. |
 
 ## Weight Options
 
 | Option | Values | Default | Meaning |
 |---|---|---:|---|
-| `--session-option qwen3_tts.mem_saver=true|false` | bool | `false` | Release the TTS talker cached-step graph after each request to reduce post-request resident VRAM. Later requests rebuild that graph; voice prompt, prefill, code predictor, and speech decoder caches stay reusable. |
+| `--session-option qwen3_tts.mem_saver=true\|false` | bool | `false` | Release the TTS talker cached-step graph after each request to reduce post-request resident VRAM. Later requests rebuild that graph; voice prompt, prefill, code predictor, and speech decoder caches stay reusable. |
 | `--session-option qwen3_tts.voice_prompt_cache_slots=<n>` | integer | `1` | Voice-clone prompt cache slots. Set to `0` to disable prompt caching. |
 | `--session-option qwen3_tts.weight_type=<type>` | `native`, `f32`, `f16`, `bf16`, `q8_0` | `native` | TTS graph weight type. |
 | `--session-option qwen3_asr.weight_type=<type>` | `native`, `f32`, `f16`, `bf16`, `q8_0` | `native` | ASR thinker weight type. |

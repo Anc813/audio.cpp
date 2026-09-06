@@ -2,20 +2,92 @@
 
 | Model | Family | Task(s) | Quick Start |
 |---|---|---|---|
+| AudioSR | `audiosr` | `s2s` audio super-resolution | [AudioSR](#audiosr) |
+| ControlFoley | `controlfoley` | `gen` Foley/SFX generation | [ControlFoley](#controlfoley) |
+| MeanVC2 | `meanvc2` | `vc` | [MeanVC2](#meanvc2) |
 | MioCodec | `miocodec` | `vc`, `s2s` | [MioCodec](#miocodec) |
+| PersonaPlex | `personaplex` | `s2s` | [PersonaPlex](#personaplex) |
 | RVC | `rvc` | `vc` | [RVC](#rvc) |
 | Seed-VC | `seed_vc` | `vc`, `svc` | [Seed-VC](#seed-vc) |
 | VeVo2 | `vevo2` | TTS, SVC, VC, editing | [VeVo2](#vevo2) |
+| MuScriptor | `muscriptor` | audio to MIDI/events | [MuScriptor](#muscriptor) |
 | HTDemucs | `htdemucs` | `sep` | [HTDemucs](#htdemucs) |
 | BS-RoFormer | `bs_roformer` | `sep` | [BS-RoFormer](#bs-roformer) |
 | Mel-Band RoFormer | `mel_band_roformer` | `sep` | [Mel-Band RoFormer](#mel-band-roformer) |
 
-This page covers voice conversion, codec, and source-separation families. These models do not share one interface: conversion models consume source speech plus a target voice, while the separation models consume a mixture and write named stems.
+This page covers voice conversion, codec, audio enhancement, Foley generation,
+audio-to-symbolic, and source-separation families. These models do not share one
+interface: conversion models consume source speech plus a target voice,
+enhancement models consume source audio, Foley models consume text/audio/video
+conditioning, audio-to-symbolic models consume audio and write structured
+artifacts, and separation models consume a mixture and write named stems.
 
 Common CLI shape:
 
 ```bash
 audiocpp_cli --task <task> --family <family> --model <model-dir> --backend cuda ...
+```
+
+## AudioSR
+
+AudioSR performs audio super-resolution from an input waveform. See
+[AudioSR](models/audiosr.md) for options and long-audio chunking behavior.
+
+```bash
+audiocpp_cli --task s2s --family audiosr \
+  --model models/AudioSR-GGUF/audiosr-basic-f32.gguf \
+  --backend cuda \
+  --audio input.wav \
+  --out enhanced.wav
+```
+
+## ControlFoley
+
+ControlFoley generates Foley audio from text, video, text plus video, or
+reference audio plus video. See [ControlFoley](models/controlfoley.md) for the
+full route matrix.
+
+```bash
+audiocpp_cli --task gen --family controlfoley \
+  --model models/ControlFoley-GGUF/controlfoley-large-44k-f32.gguf \
+  --backend cuda \
+  --text "A wooden door closes in a quiet hallway." \
+  --out foley.wav
+```
+
+## MeanVC2
+
+MeanVC2 is a zero-shot voice conversion model. It takes source speech through
+`--audio` and a target speaker reference through `--voice-ref`. See
+[MeanVC2](models/meanvc2.md) for streaming behavior and options.
+
+```bash
+python3 tools/model_manager_v2.py install meanvc2_120ms_40ms_f32
+
+audiocpp_cli --task vc --family meanvc2 \
+  --model models/MeanVC2-GGUF/meanvc2-120ms-40ms-fp32.gguf \
+  --backend cuda \
+  --audio assets/resources/a.wav \
+  --voice-ref assets/resources/b.wav \
+  --out converted.wav
+```
+
+## PersonaPlex
+
+PersonaPlex is a speech-to-speech conversational model. It consumes user audio,
+a packaged or reference voice prompt, and an optional system/persona prompt.
+See [PersonaPlex](models/personaplex.md) for offline and streaming examples.
+
+```bash
+python3 tools/model_manager_v2.py install personaplex_7b_v1_q4_k
+
+audiocpp_cli --task s2s --family personaplex \
+  --model models/PersonaPlex-GGUF \
+  --backend cuda \
+  --audio user.wav \
+  --text "You are a concise assistant. Answer naturally and briefly." \
+  --request-option voice_id=NATF2 \
+  --out reply.wav
 ```
 
 ## MioCodec
@@ -124,6 +196,26 @@ VeVo2 covers speech, singing, voice conversion, singing conversion, and editing 
 audiocpp_cli --task vc --family vevo2 --model models/VeVo2 --backend cuda --audio source.wav --voice-ref target.wav --out converted.wav
 ```
 
+## MuScriptor
+
+MuScriptor is an audio-to-symbolic tool that converts music audio into
+note-event JSON or a MIDI file. See [MuScriptor](models/muscriptor.md) for
+streaming, sampling, and full option details.
+
+```bash
+python3 tools/model_manager_v2.py install muscriptor
+
+audiocpp_cli --task midi --family muscriptor \
+  --model models/MuScriptor-Small-GGUF/muscriptor-small-f32.gguf \
+  --backend cuda \
+  --audio song.wav \
+  --request-option instruments=drums,electric_bass \
+  --out result.mid
+```
+
+Use `--request-option output_format=json --out events.json` when you want the
+generated note-event JSON instead of MIDI.
+
 ## HTDemucs
 
 HTDemucs separates a music mixture into stems. The current integration writes the model stems as named output artifacts under `--out-dir`; it does not expose the upstream two-stems shortcut as a separate CLI task.
@@ -147,6 +239,13 @@ audiocpp_cli --task sep --family htdemucs --model models/htdemucs --backend cuda
 | `--audio` | 44.1 kHz WAV path | required | Input music mixture. |
 | `--out-dir` | directory | required | Directory for separated stems. |
 | `--backend` | `cpu`, `cuda`, `vulkan`, `metal`, `best` | `cpu` | Compute backend. |
+| `--session-option htdemucs.weight_type=<type>` | `native`, `f32`, `f16`, `bf16`, `q8_0` | backend-dependent | Weight storage type. Defaults to `f32` for host graph planning, `f16` on CUDA, and `native` otherwise. |
+
+Schema-v1 option compatibility:
+
+| Legacy/session input | Schema-v1 option | Notes |
+|---|---|---|
+| `weight_type` | `htdemucs.weight_type` | Accepted as a compatibility alias for direct session-option callers. Prefer the family-prefixed form. |
 
 ## BS-RoFormer
 
@@ -218,7 +317,7 @@ Mel-Band RoFormer is wired as a vocal/source-separation model. The CLI uses the 
 | Modes | `offline` |
 | Input | 44.1 kHz music mixture WAV through `--audio` |
 | Output | Named separated artifacts under `--out-dir` |
-| Notes | Chunking/overlap behavior is internal to the integration; no user chunk option is exposed here |
+| Notes | Uses the package overlap count by default; `mel_band_roformer.num_overlap` can lower the overlap for faster inference with a quality tradeoff |
 
 ```bash
 audiocpp_cli --task sep --family mel_band_roformer --model models/mel-roformer-mlx --backend cuda --audio song_44k.wav --out-dir stems
@@ -229,5 +328,14 @@ audiocpp_cli --task sep --family mel_band_roformer --model models/mel-roformer-m
 | `--audio` | 44.1 kHz WAV path | required | Input music mixture. |
 | `--out-dir` | directory | required | Directory for separated outputs. |
 | `--backend` | `cpu`, `cuda`, `vulkan`, `metal`, `best` | `cpu` | Compute backend. |
+| `--session-option mel_band_roformer.weight_type=<type>` | `native`, `f32`, `f16`, `bf16`, `q8_0` | backend-dependent | Weight storage type. Defaults to `f32` when the backend requires a host graph plan, otherwise `native`. |
+| `--session-option mel_band_roformer.num_overlap=<n>` | integer `>= 1` | package config | Number of overlapping inference windows. Lower values improve throughput but can reduce boundary quality. |
+
+Schema-v1 option compatibility:
+
+| Legacy/session input | Schema-v1 option | Notes |
+|---|---|---|
+| `weight_type` | `mel_band_roformer.weight_type` | Accepted as a compatibility alias for direct session-option callers. Prefer the family-prefixed form. |
+| `num_overlap` | `mel_band_roformer.num_overlap` | Accepted as a compatibility alias for direct session-option callers. Prefer the family-prefixed form. |
 
 For backend weight-type controls, use `audiocpp_cli --inspect --model <model-dir> --family <family>`.

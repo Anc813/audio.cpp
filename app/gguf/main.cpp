@@ -38,6 +38,35 @@ std::string lower_ascii(std::string value) {
     return value;
 }
 
+bool is_gguf_path(const std::filesystem::path & path) {
+    return lower_ascii(path.extension().string()) == ".gguf";
+}
+
+// A GGUF this tool wrote carries its conversion namespaces in the tensor names
+// ("<namespace>/<tensor>"), so re-converting one — requantising a published
+// bf16 package to q8_0, say — can recover them instead of asking the caller to
+// spell out namespaces the file already knows.
+std::set<std::string> gguf_tensor_namespaces(const std::filesystem::path & path) {
+    std::set<std::string> namespaces;
+    const auto source = engine::assets::open_tensor_source(path);
+    for (const auto & tensor : source->tensors()) {
+        const auto separator = tensor.name.find('/');
+        namespaces.insert(separator == std::string::npos ? std::string() : tensor.name.substr(0, separator));
+    }
+    return namespaces;
+}
+
+std::set<std::string> input_namespaces(const engine::assets::TensorSourceInput & input) {
+    if (!input.tensor_prefix.empty())
+        return {input.tensor_prefix};
+    if (is_gguf_path(input.path)) {
+        auto namespaces = gguf_tensor_namespaces(input.path);
+        if (!namespaces.empty())
+            return namespaces;
+    }
+    return {std::string()};
+}
+
 bool excluded_sidecar(const std::filesystem::path & path, const std::filesystem::path & output) {
     const std::string extension = lower_ascii(path.extension().string());
     return extension == ".safetensors" || extension == ".gguf" || extension == ".bin" || extension == ".pt" ||
@@ -304,7 +333,8 @@ std::optional<std::string> required_destination(const json::Value & source, cons
 
 std::vector<std::string> validate_candidate(const PackageSpecCandidate & candidate,
                                             const std::set<std::string> & actual_prefixes,
-                                            const std::set<std::string> & sidecars) {
+                                            const std::set<std::string> & sidecars,
+                                            bool reconversion) {
     std::vector<std::string> errors;
     try {
         const auto spec = json::parse(candidate.spec.json);
@@ -314,14 +344,36 @@ std::vector<std::string> validate_candidate(const PackageSpecCandidate & candida
             (void)unused;
             expected_prefixes.insert(tensor_prefix(value));
         }
-        for (const auto & prefix : expected_prefixes) {
-            if (actual_prefixes.find(prefix) == actual_prefixes.end()) {
-                errors.push_back("missing tensor namespace '" + (prefix.empty() ? std::string("<root>") : prefix) +
-                                 "'");
+        // A namespace in `optional_tensors` is one the family's packages may or
+        // may not ship — an ACE-Step XL DiT against a turbo-only package. It
+        // cannot be required of every conversion, but a conversion that does
+        // supply it is building exactly the package the spec describes, so it
+        // is not unexpected either.
+        std::set<std::string> optional_prefixes;
+        if (const auto * optional_tensors = source.find("optional_tensors");
+            optional_tensors != nullptr && !optional_tensors->is_null()) {
+            for (const auto & [unused, value] : optional_tensors->as_object()) {
+                (void)unused;
+                optional_prefixes.insert(tensor_prefix(value));
+            }
+        }
+        // Requiring every namespace catches a fresh conversion that forgot an
+        // input. Re-converting a finished package proves nothing of the sort:
+        // its namespaces are already exactly what that package ships, and a
+        // package legitimately built with `--exclude-prefix` (an ACE-Step XL
+        // GGUF carries no turbo or base DiT) would otherwise be impossible to
+        // re-quantise even though the runtime loads it happily.
+        if (!reconversion) {
+            for (const auto & prefix : expected_prefixes) {
+                if (actual_prefixes.find(prefix) == actual_prefixes.end()) {
+                    errors.push_back("missing tensor namespace '" + (prefix.empty() ? std::string("<root>") : prefix) +
+                                     "'");
+                }
             }
         }
         for (const auto & prefix : actual_prefixes) {
-            if (expected_prefixes.find(prefix) == expected_prefixes.end()) {
+            if (expected_prefixes.find(prefix) == expected_prefixes.end() &&
+                optional_prefixes.find(prefix) == optional_prefixes.end()) {
                 errors.push_back("unexpected tensor namespace '" + (prefix.empty() ? std::string("<root>") : prefix) +
                                  "'");
             }
@@ -340,22 +392,78 @@ std::vector<std::string> validate_candidate(const PackageSpecCandidate & candida
     return errors;
 }
 
+// Where the conversion looks for the small files (configs, tokenizers) that
+// belong in the output. `--root` wins, and so does an explicit `--sidecar`
+// set. Otherwise a GGUF input's own embedded copies are used — for a re-encode
+// they are exactly the files that package ships, where the directory the file
+// happens to sit in is only a guess. Everything else keeps using that
+// directory, which is what every safetensors conversion does.
+std::filesystem::path resolve_sidecar_root(const std::filesystem::path & requested,
+                                           const std::vector<engine::assets::TensorSourceInput> & inputs,
+                                           const std::vector<engine::assets::GgufEmbeddedFile> & explicit_sidecars,
+                                           bool embed_sidecars) {
+    if (!requested.empty())
+        return std::filesystem::weakly_canonical(requested);
+    const auto parent = std::filesystem::weakly_canonical(inputs.front().path.parent_path());
+    if (!embed_sidecars || !explicit_sidecars.empty())
+        return parent;
+    for (const auto & input : inputs) {
+        if (!is_gguf_path(input.path) || !engine::assets::gguf_has_embedded_sidecars(input.path))
+            continue;
+        const auto materialized = engine::assets::materialize_gguf_sidecars(input.path);
+        std::cerr << "note: reusing the sidecars embedded in " << input.path.string()
+                  << "; pass --root to override\n";
+        return materialized;
+    }
+    return parent;
+}
+
 PackageSpecCandidate select_package_spec(const std::vector<engine::assets::TensorSourceInput> & inputs,
                                          const std::filesystem::path & model_root, const std::filesystem::path & output,
                                          const std::vector<engine::assets::GgufEmbeddedFile> & explicit_sidecars,
                                          const std::optional<std::filesystem::path> & requested_spec,
                                          std::optional<std::string> family,
                                          bool embed_sidecars) {
+    // Every input is a GGUF this tool wrote for one family: the conversion is a
+    // re-encode of a finished package rather than an assembly of a new one.
+    const bool reconversion =
+        !inputs.empty() && std::all_of(inputs.begin(), inputs.end(),
+                                       [](const engine::assets::TensorSourceInput & input) {
+                                           return is_gguf_path(input.path) &&
+                                               engine::assets::read_gguf_embedded_model_spec(input.path).has_value();
+                                       });
     std::vector<PackageSpecCandidate> candidates;
     if (requested_spec.has_value()) {
         add_spec_path(candidates, *requested_spec, family, 0);
     } else {
         const size_t config_candidate_count = candidates.size();
+        // A GGUF input states its own family and package spec. Trusting that is
+        // both more accurate than guessing from the catalog and safer: without
+        // it, a single-namespace GGUF matches whichever unrelated family's spec
+        // happens to accept one unnamed namespace, and the conversion is
+        // silently stamped with that family.
+        for (const auto & input : inputs) {
+            if (!is_gguf_path(input.path))
+                continue;
+            const auto embedded = engine::assets::read_gguf_embedded_model_spec(input.path);
+            if (!embedded.has_value())
+                continue;
+            add_candidate(candidates,
+                          parse_package_spec(embedded->json, "embedded:" + input.path.string(), 0));
+            if (!family.has_value())
+                family = embedded->family;
+        }
         const auto config_family = add_model_config_spec(candidates, model_root);
         if (!family.has_value())
             family = config_family;
 
-        if (candidates.size() == config_candidate_count) {
+        // An explicitly requested family that none of those specs describes still
+        // falls through to the catalog, the way it did before they existed.
+        const bool describes_requested_family =
+            std::any_of(candidates.begin(), candidates.end(), [&family](const PackageSpecCandidate & candidate) {
+                return !family.has_value() || candidate.spec.family == *family;
+            });
+        if (candidates.size() == config_candidate_count || !describes_requested_family) {
             if (engine::io::is_existing_file(model_root / "model_spec.json")) {
                 add_spec_file(candidates, model_root / "model_spec.json", 2);
             }
@@ -375,9 +483,11 @@ PackageSpecCandidate select_package_spec(const std::vector<engine::assets::Tenso
 
     std::set<std::string> prefixes;
     for (const auto & input : inputs) {
-        if (!prefixes.insert(input.tensor_prefix).second) {
-            throw std::runtime_error("duplicate tensor namespace in conversion inputs: '" +
-                                     (input.tensor_prefix.empty() ? std::string("<root>") : input.tensor_prefix) + "'");
+        for (const auto & prefix : input_namespaces(input)) {
+            if (!prefixes.insert(prefix).second) {
+                throw std::runtime_error("duplicate tensor namespace in conversion inputs: '" +
+                                         (prefix.empty() ? std::string("<root>") : prefix) + "'");
+            }
         }
     }
     const auto sidecars = planned_sidecar_destinations(model_root, output, explicit_sidecars, embed_sidecars);
@@ -398,7 +508,7 @@ PackageSpecCandidate select_package_spec(const std::vector<engine::assets::Tenso
     for (const auto & candidate : candidates) {
         if ((family.has_value() && candidate.spec.family != *family) || candidate.priority != *selected_priority)
             continue;
-        auto errors = validate_candidate(candidate, prefixes, sidecars);
+        auto errors = validate_candidate(candidate, prefixes, sidecars, reconversion);
         if (errors.empty())
             matches.push_back({candidate, {}});
         else
@@ -436,6 +546,7 @@ void print_usage() {
                  "[--root <model-dir>] [--sidecar <source>=<destination>] "
                  "[--bnb-nf4-type q8_0] [--exclude-prefix <logical-prefix>] "
                  "[--keep-type <tensor-prefix>*=<type>] "
+                 "[--fold-weight-norm <tensor-prefix>*] "
                  "[--overwrite] [--no-sidecars] "
                  "[--allow-missing-model-spec]\n"
         << "       audiocpp_gguf --inspect <model.gguf>\n";
@@ -477,7 +588,8 @@ int main(int argc, char ** argv) {
             }
             if ((arg == "--input" || arg == "--output" || arg == "--type" || arg == "--inspect" || arg == "--root" ||
                  arg == "--sidecar" || arg == "--family" || arg == "--model-spec" || arg == "--model-spec-override" ||
-                 arg == "--bnb-nf4-type" || arg == "--exclude-prefix" || arg == "--keep-type") &&
+                 arg == "--bnb-nf4-type" || arg == "--exclude-prefix" || arg == "--keep-type" ||
+                 arg == "--fold-weight-norm") &&
                 i + 1 < argc) {
                 const std::string value = argv[++i];
                 if (arg == "--input") {
@@ -494,6 +606,8 @@ int main(int argc, char ** argv) {
                     conversion_options.bnb_nf4_type = engine::assets::parse_tensor_storage_type(value);
                 else if (arg == "--exclude-prefix")
                     conversion_options.excluded_tensor_prefixes.push_back(value);
+                else if (arg == "--fold-weight-norm")
+                    conversion_options.folded_weight_norm_patterns.push_back(value);
                 else if (arg == "--inspect")
                     inspect_path = value;
                 else if (arg == "--root")
@@ -566,7 +680,7 @@ int main(int argc, char ** argv) {
         }
         const auto storage_type = engine::assets::parse_tensor_storage_type(type);
         const auto resolved_sidecar_root =
-            std::filesystem::weakly_canonical(sidecar_root.empty() ? inputs.front().path.parent_path() : sidecar_root);
+            resolve_sidecar_root(sidecar_root, inputs, sidecars, embed_sidecars);
         std::optional<engine::assets::GgufEmbeddedModelSpec> embedded_model_spec;
         if (!allow_missing_model_spec) {
             embedded_model_spec =
@@ -596,6 +710,7 @@ int main(int argc, char ** argv) {
         for (const auto & prefix : conversion_options.excluded_tensor_prefixes)
             std::cout << "excluded_prefix=" << prefix << "\n";
         std::cout << "type_overrides=" << conversion_options.type_overrides.size() << "\n";
+        std::cout << "folded_weight_norm_patterns=" << conversion_options.folded_weight_norm_patterns.size() << "\n";
         std::cout << "embedded_sidecars=" << (engine::assets::gguf_has_embedded_sidecars(output) ? "true" : "false")
                   << "\n";
         std::cout << "embedded_model_spec=" << (embedded_model_spec.has_value() ? "true" : "false") << "\n";

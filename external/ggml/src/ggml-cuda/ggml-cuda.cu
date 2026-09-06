@@ -13,6 +13,7 @@
 #include "ggml-cuda/clamp.cuh"
 #include "ggml-cuda/col2im-1d.cuh"
 #include "ggml-cuda/concat.cuh"
+#include "ggml-cuda/convrot-linear.cuh"
 #include "ggml-cuda/conv-transpose-1d.cuh"
 #include "ggml-cuda/conv2d.cuh"
 #include "ggml-cuda/conv2d-dw.cuh"
@@ -41,6 +42,7 @@
 #include "ggml-cuda/rope.cuh"
 #include "ggml-cuda/roll.cuh"
 #include "ggml-cuda/scale.cuh"
+#include "ggml-cuda/sage-attn2.cuh"
 #include "ggml-cuda/snake.cuh"
 #include "ggml-cuda/softcap.cuh"
 #include "ggml-cuda/softmax.cuh"
@@ -376,6 +378,10 @@ struct ggml_cuda_pool_leg : public ggml_cuda_pool {
     ~ggml_cuda_pool_leg() {
         clear_pool();
         GGML_ASSERT(pool_size == 0);
+    }
+
+    void clear() override {
+        clear_pool();
     }
 
     void clear_pool() {
@@ -1737,7 +1743,8 @@ static void ggml_cuda_op_mul_mat_cublas(
 
     const int cc = ggml_cuda_info().devices[id].cc;
 
-    const bool supports_bf16 = GGML_CUDA_CC_IS_NVIDIA(cc) || GGML_CUDA_CC_IS_AMD(cc) ||
+    const bool supports_bf16 =
+        (GGML_CUDA_CC_IS_NVIDIA(cc) && cc >= GGML_CUDA_CC_AMPERE) || GGML_CUDA_CC_IS_AMD(cc) ||
         (GGML_CUDA_CC_IS_MTHREADS(cc) && cc >= GGML_CUDA_CC_QY2);
 
     const bool use_fp16 =
@@ -1758,18 +1765,19 @@ static void ggml_cuda_op_mul_mat_cublas(
         }
         const nv_bfloat16 * src1_ptr = src1->type == GGML_TYPE_BF16 ? (const nv_bfloat16 *) src1_ddf_i : src1_as_bf16.get();
         const nv_bfloat16 * src0_ptr = (const nv_bfloat16 *)src0_dd_i;
-        ggml_cuda_pool_alloc<nv_bfloat16> dst_bf16(ctx.pool(id), row_diff*src1_ncols);
-
         const float alpha_f32 = 1.0f;
         const float beta_f32  = 0.0f;
 
 #if defined(GGML_USE_HIP) && defined(GGML_HIP_USE_HIPBLASLT)
+        ggml_cuda_pool_alloc<nv_bfloat16> dst_bf16(ctx.pool(id), row_diff*src1_ncols);
         ggml_hipblaslt_gemm(ctx, stream,
                 row_diff, src1_ncols, ne10,
                 src0_ptr,       CUDA_R_16BF, ne00, 0,
                 src1_ptr,       CUDA_R_16BF, ne10, 0,
                 dst_bf16.get(), CUDA_R_16BF, ldc,  0,
                 1);
+        const to_fp32_cuda_t to_fp32_cuda = ggml_get_to_fp32_cuda(GGML_TYPE_BF16);
+        to_fp32_cuda(dst_bf16.get(), dst_dd_i, row_diff*src1_ncols, stream);
         GGML_UNUSED_VARS(alpha_f32, beta_f32);
 #else
         CUBLAS_CHECK(cublasSetStream(ctx.cublas_handle(id), stream));
@@ -1778,13 +1786,10 @@ static void ggml_cuda_op_mul_mat_cublas(
                     row_diff, src1_ncols, ne10,
                     &alpha_f32,  src0_ptr,       CUDA_R_16BF, ne00,
                                  src1_ptr,       CUDA_R_16BF, ne10,
-                    &beta_f32,   dst_bf16.get(), CUDA_R_16BF, ldc,
+                    &beta_f32,   dst_dd_i,       CUDA_R_32F,  ldc,
                     CUBLAS_COMPUTE_32F,
                     CUBLAS_GEMM_DEFAULT_TENSOR_OP));
 #endif // defined(GGML_USE_HIP) && defined(GGML_HIP_USE_HIPBLASLT)
-
-        const to_fp32_cuda_t to_fp32_cuda = ggml_get_to_fp32_cuda(GGML_TYPE_BF16);
-        to_fp32_cuda(dst_bf16.get(), dst_dd_i, row_diff*src1_ncols, stream);
     } else if (fast_fp16_hardware_available(cc) && use_fp16) {
         // convert src0 and src1 to fp16, multiply as fp16, convert dst to fp32
         ggml_cuda_pool_alloc<half> src0_as_f16(ctx.pool(id));
@@ -3060,6 +3065,9 @@ static bool ggml_cuda_compute_forward(ggml_backend_cuda_context & ctx, struct gg
                 case GGML_UNARY_OP_TRUNC:
                     ggml_cuda_op_trunc(ctx, dst);
                     break;
+                case GGML_UNARY_OP_ROUND_BF16:
+                    ggml_cuda_op_round_bf16(ctx, dst);
+                    break;
                 case GGML_UNARY_OP_EXPM1:
                     ggml_cuda_op_expm1(ctx, dst);
                     break;
@@ -3242,6 +3250,15 @@ static bool ggml_cuda_compute_forward(ggml_backend_cuda_context & ctx, struct gg
             break;
         case GGML_OP_FLASH_ATTN_EXT:
             ggml_cuda_flash_attn_ext(ctx, dst);
+            break;
+        case GGML_OP_SAGE_ATTN2:
+            ggml_cuda_sage_attn2(ctx, dst);
+            break;
+        case GGML_OP_SAGE_ATTN2_I8:
+            ggml_cuda_sage_attn2_i8(ctx, dst);
+            break;
+        case GGML_OP_CONVROT_LINEAR:
+            ggml_cuda_convrot_linear(ctx, dst);
             break;
         case GGML_OP_CROSS_ENTROPY_LOSS:
             ggml_cuda_cross_entropy_loss(ctx, dst);
@@ -4656,7 +4673,12 @@ static bool ggml_cuda_graph_set_enabled(ggml_backend_cuda_context * cuda_ctx, co
     ggml_cuda_graph * graph = cuda_ctx->cuda_graph(graph_key);
 
     if (graph->graph == nullptr) {
-        if (ggml_cuda_info().devices[cuda_ctx->device].cc < GGML_CUDA_CC_AMPERE) {
+        // CUDA graphs are disabled by default on pre-Ampere GPUs (matching
+        // upstream, where they regressed on some parts), but can be force
+        // enabled; decode loops made of many tiny kernels benefit even on
+        // Turing.
+        static const bool allow_pre_ampere = getenv("GGML_CUDA_GRAPHS_PRE_AMPERE") != nullptr;
+        if (!allow_pre_ampere && ggml_cuda_info().devices[cuda_ctx->device].cc < GGML_CUDA_CC_AMPERE) {
             if (!graph->disable_due_to_gpu_arch) {
                 GGML_LOG_DEBUG("%s: disabling CUDA graphs due to GPU architecture\n", __func__);
             }
@@ -5020,8 +5042,38 @@ static ggml_guid_t ggml_backend_cuda_guid() {
     return &guid;
 }
 
+void * ggml_backend_cuda_get_stream(ggml_backend_t backend) {
+    GGML_ASSERT(ggml_backend_is_cuda(backend));
+    ggml_backend_cuda_context * cuda_ctx = (ggml_backend_cuda_context *)backend->context;
+    ggml_cuda_set_device(cuda_ctx->device);
+    return (void *) cuda_ctx->stream();
+}
+
 bool ggml_backend_is_cuda(ggml_backend_t backend) {
     return backend != NULL && ggml_guid_matches(backend->guid, ggml_backend_cuda_guid());
+}
+
+void ggml_backend_cuda_trim_pools(ggml_backend_t backend) {
+    if (!ggml_backend_is_cuda(backend)) {
+        return;
+    }
+    ggml_backend_cuda_context * cuda_ctx = (ggml_backend_cuda_context *) backend->context;
+    CUDA_CHECK(cudaDeviceSynchronize());
+    for (int device = 0; device < GGML_CUDA_MAX_DEVICES; ++device) {
+        for (int stream = 0; stream < GGML_CUDA_MAX_STREAMS; ++stream) {
+            if (cuda_ctx->pools[device][stream] != nullptr) {
+                cuda_ctx->pools[device][stream]->clear();
+            }
+        }
+    }
+}
+
+void ggml_backend_cuda_set_stream_priority(ggml_backend_t backend, int priority) {
+    if (backend == nullptr || !ggml_backend_is_cuda(backend)) {
+        return;
+    }
+    ggml_backend_cuda_context * ctx = (ggml_backend_cuda_context *)backend->context;
+    ctx->stream_priority = priority;
 }
 
 void ggml_backend_cuda_clear_graph(ggml_backend_t backend, const ggml_cgraph * graph) {
@@ -5312,6 +5364,12 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
                     // TODO: should become:
                     //return ggml_is_contiguous_rows(op->src[0]);
                     return ggml_is_contiguous(op->src[0]);
+                case GGML_UNARY_OP_ROUND_BF16:
+                    // f32/f16/bf16 src with contiguous rows, contiguous f32 dst.
+                    return (op->src[0]->type == GGML_TYPE_F32 || op->src[0]->type == GGML_TYPE_F16 ||
+                            op->src[0]->type == GGML_TYPE_BF16) &&
+                           op->type == GGML_TYPE_F32 && ggml_is_contiguous(op) &&
+                           ggml_is_contiguous_rows(op->src[0]);
                 default:
                     return false;
             }
@@ -5640,6 +5698,12 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
 #endif // GGML_USE_MUSA
         case GGML_OP_FLASH_ATTN_EXT:
             return ggml_cuda_flash_attn_ext_supported(dev_ctx->device, op);
+        case GGML_OP_SAGE_ATTN2:
+            return ggml_cuda_sage_attn2_supported(dev_ctx->device, op);
+        case GGML_OP_SAGE_ATTN2_I8:
+            return ggml_cuda_sage_attn2_i8_supported(dev_ctx->device, op);
+        case GGML_OP_CONVROT_LINEAR:
+            return ggml_cuda_convrot_linear_supported(dev_ctx->device, op);
         case GGML_OP_CROSS_ENTROPY_LOSS:
         case GGML_OP_CROSS_ENTROPY_LOSS_BACK:
         case GGML_OP_OPT_STEP_ADAMW:
@@ -5837,6 +5901,18 @@ static void * ggml_backend_cuda_reg_get_proc_address(ggml_backend_reg_t reg, con
     }
     if (strcmp(name, "ggml_backend_get_features") == 0) {
         return (void *)ggml_backend_cuda_get_features;
+    }
+    if (strcmp(name, "ggml_backend_cuda_clear_graph") == 0) {
+        return (void *)ggml_backend_cuda_clear_graph;
+    }
+    if (strcmp(name, "ggml_backend_cuda_trim_pools") == 0) {
+        return (void *)ggml_backend_cuda_trim_pools;
+    }
+    if (strcmp(name, "ggml_backend_cuda_set_stream_priority") == 0) {
+        return (void *)ggml_backend_cuda_set_stream_priority;
+    }
+    if (strcmp(name, "ggml_backend_cuda_get_stream") == 0) {
+        return (void *)ggml_backend_cuda_get_stream;
     }
     return nullptr;
 }

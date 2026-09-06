@@ -7,11 +7,13 @@
 
 #include <algorithm>
 #include <cctype>
+#include <iostream>
 #include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace engine::model_spec {
@@ -21,6 +23,7 @@ thread_local std::optional<std::filesystem::path> active_model_spec_override;
 thread_local std::optional<std::filesystem::path> active_model_path;
 thread_local bool active_embedded_spec_checked = false;
 thread_local std::optional<assets::GgufEmbeddedModelSpec> active_embedded_spec;
+thread_local std::unordered_set<std::string> legacy_embedded_contract_warnings;
 
 const std::unordered_map<std::string, std::string_view> & builtin_model_specs() {
     static const std::unordered_map<std::string, std::string_view> specs = {
@@ -116,6 +119,27 @@ const std::optional<assets::GgufEmbeddedModelSpec> & embedded_model_spec() {
     return active_embedded_spec;
 }
 
+bool embedded_model_spec_has_v1_contract(
+    const assets::GgufEmbeddedModelSpec & embedded,
+    std::string_view family) {
+    if (embedded.family != family) {
+        throw std::runtime_error("GGUF embeds model spec for family '" + embedded.family + "', not '" +
+                                 std::string(family) + "'");
+    }
+    const auto root = engine::io::json::parse(embedded.json);
+    return root.find("schema_version") != nullptr;
+}
+
+void warn_legacy_embedded_contract(std::string_view family) {
+    if (!legacy_embedded_contract_warnings.emplace(family).second) {
+        return;
+    }
+    std::cerr << "[warning][model_spec] GGUF for family '" << family
+              << "' embeds a legacy model spec. Using the current schema-v1 model contract "
+                 "from the installed audio.cpp runtime for option validation. Regenerate the "
+                 "GGUF to make the package fully standalone.\n";
+}
+
 bool external_spec_matches_family(const std::filesystem::path & path, std::string_view family) {
     if (!engine::io::is_existing_file(path))
         return false;
@@ -172,7 +196,7 @@ std::optional<std::filesystem::path> discover_workspace_model_spec(std::string_v
     return std::nullopt;
 }
 
-engine::io::json::Value parse_model_spec(const std::filesystem::path & spec_path) {
+engine::io::json::Value parse_model_spec(const std::filesystem::path & spec_path, bool validate) {
     engine::io::json::Value root;
     if (spec_path.parent_path() == "@gguf") {
         const auto & spec = embedded_model_spec();
@@ -189,7 +213,9 @@ engine::io::json::Value parse_model_spec(const std::filesystem::path & spec_path
     } else {
         root = engine::io::json::parse_file(spec_path);
     }
-    validate_spec(root, model_spec_description(spec_path));
+    if (validate) {
+        validate_spec(root, model_spec_description(spec_path));
+    }
     return root;
 }
 
@@ -292,6 +318,27 @@ void add_tensor_map(assets::ResourceBundle & bundle,
     }
 }
 
+// Tensor sources a package may or may not ship. The required `tensors` map is
+// checked eagerly, which is what a package wants for the weights it cannot run
+// without; a family whose variants are separate multi-gigabyte downloads needs
+// the other answer, or installing one variant means downloading all of them.
+// A model that selects a missing variant reports it itself, where it can name
+// the variant instead of a resource id.
+void add_optional_tensor_map(assets::ResourceBundle & bundle,
+    const ResourceRoots & roots,
+    const engine::io::json::Value * map_value) {
+    if (map_value == nullptr || map_value->is_null()) {
+        return;
+    }
+    for (const auto & [id, ref] : map_value->as_object()) {
+        std::string prefix;
+        const auto path = resolve_tensor_source_ref(roots, ref, prefix);
+        if (engine::io::is_existing_file(path)) {
+            bundle.add_tensor_source(id, path, std::move(prefix));
+        }
+    }
+}
+
 void add_optional_resource_map(assets::ResourceBundle & bundle, const ResourceRoots & roots,
     const engine::io::json::Value * map_value) {
     if (map_value == nullptr || map_value->is_null()) {
@@ -330,6 +377,7 @@ assets::ResourceBundle load_source(const std::filesystem::path & model_root, con
     add_resource_map(bundle, roots, source.find("files"));
     add_optional_resource_map(bundle, roots, source.find("optional_files"));
     add_tensor_map(bundle, roots, source.find("tensors"));
+    add_optional_tensor_map(bundle, roots, source.find("optional_tensors"));
     return bundle;
 }
 
@@ -338,10 +386,9 @@ std::vector<assets::ResourceFile> discover_safetensors_source_resources(const en
     const ResourceRoots & roots) {
     auto resources = resources_from_resource_map(
         roots, source.find(kind == ResourceKind::Files ? "files" : "tensors"), true);
-    if (kind == ResourceKind::Files) {
-        auto optional = resources_from_resource_map(roots, source.find("optional_files"), false);
-        resources.insert(resources.end(), optional.begin(), optional.end());
-    }
+    auto optional = resources_from_resource_map(
+        roots, source.find(kind == ResourceKind::Files ? "optional_files" : "optional_tensors"), false);
+    resources.insert(resources.end(), optional.begin(), optional.end());
     return resources;
 }
 
@@ -374,7 +421,7 @@ SelectedSource require_selected_source(const std::filesystem::path & model_path,
     const auto spec_description = model_spec_description(spec_path);
     engine::io::json::Value spec;
     try {
-        spec = parse_model_spec(spec_path);
+        spec = parse_model_spec(spec_path, true);
     } catch (const std::exception & error) {
         throw std::runtime_error("failed to parse " + spec_description + ": " + error.what());
     }
@@ -465,21 +512,44 @@ std::filesystem::path default_contract_spec_path(std::string_view family) {
         }
         return std::filesystem::weakly_canonical(path);
     }
+    bool active_gguf_has_legacy_spec = false;
+    if (const auto gguf = active_gguf_path()) {
+        const auto & embedded = embedded_model_spec();
+        if (!embedded.has_value()) {
+            if (family == "minimax_h3") {
+                if (const auto external = discover_workspace_model_spec(family)) {
+                    return *external;
+                }
+                if (builtin_model_specs().find(std::string(family)) != builtin_model_specs().end()) {
+                    return std::filesystem::path("@builtin") / (std::string(family) + ".json");
+                }
+            }
+            throw std::runtime_error("GGUF for family '" + std::string(family) +
+                                     "' does not embed an audio.cpp model spec: " + gguf->string() +
+                                     ". Published GGUF packages must embed a model spec; regenerate the GGUF "
+                                     "or pass --model-spec-override.");
+        }
+        if (embedded_model_spec_has_v1_contract(*embedded, family)) {
+            return std::filesystem::path("@gguf") / (std::string(family) + ".json");
+        }
+        active_gguf_has_legacy_spec = true;
+        warn_legacy_embedded_contract(family);
+    }
     if (const auto external = discover_workspace_model_spec(family)) {
         return *external;
     }
     if (builtin_model_specs().find(std::string(family)) != builtin_model_specs().end()) {
         return std::filesystem::path("@builtin") / (std::string(family) + ".json");
     }
-    if (const auto & embedded = embedded_model_spec(); embedded.has_value()) {
-        if (embedded->family != family) {
-            throw std::runtime_error("GGUF embeds model spec for family '" + embedded->family + "', not '" +
-                                     std::string(family) + "'");
-        }
-        return std::filesystem::path("@gguf") / (std::string(family) + ".json");
-    }
     if (const auto hint = directory_gguf_hint(family); !hint.empty()) {
         throw std::runtime_error(hint);
+    }
+    if (active_gguf_has_legacy_spec) {
+        throw std::runtime_error("GGUF for family '" + std::string(family) +
+                                 "' embeds a legacy model spec, but no current schema-v1 model contract was found. "
+                                 "Install model_specs/" + std::string(family) +
+                                 ".json, enable AUDIOCPP_DEPLOYMENT_BUILD, regenerate the GGUF, "
+                                 "or pass --model-spec-override.");
     }
     throw std::runtime_error("model contract spec not found for family '" + std::string(family) +
                              "' (provide --model-spec-override, install model_specs/" +
@@ -510,7 +580,11 @@ assets::ResourceBundle load_resource_bundle_for_family(
 }
 
 engine::io::json::Value load_spec(const std::filesystem::path & spec_path) {
-    return parse_model_spec(spec_path);
+    return parse_model_spec(spec_path, true);
+}
+
+engine::io::json::Value load_contract_spec(const std::filesystem::path & spec_path) {
+    return parse_model_spec(spec_path, false);
 }
 
 std::vector<assets::ResourceFile> discover_resources(

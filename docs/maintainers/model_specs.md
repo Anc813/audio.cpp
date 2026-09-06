@@ -35,9 +35,9 @@ Top-level fields:
 | `schema_version` | Must be `1`. | No |
 | `family` | Runtime model family id. Must match the filename stem. | Yes, if changing an already published family id |
 | `display_name` | User-facing model family name. | No |
-| `category` | Typed category such as `asr`, `tts`, `audio_generation`, or `community`. | No |
+| `category` | Typed category such as `asr`, `tts`, `audio_generation`, `audio_tools`, or `community`. | No |
 | `status` | Typed status: `supported`, `community`, `experimental`, `wip`, or `unsupported`. | No |
-| `tasks` | Typed task tags such as `asr`, `tts`, `clone`, `vc`, or `align`. | No |
+| `tasks` | Typed task tags such as `asr`, `tts`, `clone`, `vc`, `midi`, or `align`. | No |
 | `modes` | Supported run modes: `offline` and/or `streaming`. | No |
 | `languages` | Family-level language scope, such as `en`, `zh`, `ja`, `multilingual`, or `language_agnostic`. | No |
 | `runtime` | Runtime tags such as `gguf` or `stream`. | No |
@@ -156,6 +156,11 @@ packages come from the same repo, put the shared source in
 `package_defaults.download` and keep package-level `download` only for
 overrides.
 
+Experimental ports may use an empty `packages` array while conversion and
+runtime validation are still local-only. In that case `ui.recommended_package`
+is omitted, so model managers do not advertise a download that cannot yet be
+loaded. Community and supported families must publish at least one package.
+
 ```json
 {
   "package_defaults": {
@@ -181,6 +186,15 @@ overrides.
 }
 ```
 
+`kind: "modelscope_snapshot"` downloads the same way from a ModelScope
+(modelscope.cn) repo. It takes the same fields (`repo` required, `revision`
+optional); the only differences are that the default revision is `master`
+(ModelScope's default branch) and the `gated` flag does not apply. The native
+package manager resolves the endpoint through `AUDIOCPP_MS_BASE_URL`
+(default `https://www.modelscope.cn`), mirroring `AUDIOCPP_HF_BASE_URL` for
+Hugging Face. ModelScope requests authenticate with `AUDIOCPP_MS_TOKEN` only;
+the Hugging Face token is never sent to a ModelScope endpoint.
+
 Dependencies describe extra model-level resources required by runtime features.
 Use `kind: "model"` for another model family, and `kind: "bundled_model"` for an
 in-repo bundled model asset. Do not use dependencies for sidecars or tensor
@@ -191,10 +205,13 @@ runtime option key is derived as `<family>.<option>`.
 Required dependencies are unconditional. Optional dependencies must declare
 typed `required_when` rows. Each row is a condition over a public option key.
 Common request keys such as `return_timestamps` stay unprefixed; model-specific
-keys stay namespaced. The dependency is needed when any row matches.
-`dependencies[].option` must name a declared option in the dependency `scope`,
-and every `required_when[].option_key` must refer to a declared public option in
-the referenced scope. Multiple `required_when` rows use OR semantics.
+session/load keys stay namespaced as `<family>.<name>`. Multiple rows are OR'd:
+the dependency is needed when **any** row matches.
+
+`dependencies[].option` must be a local name that already exists under
+`options.<scope>` for the same dependency `scope`. Each
+`required_when[].option_key` must refer to an option declared under
+`options.<required_when.scope>` (using the public key form above).
 
 ```json
 {

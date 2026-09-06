@@ -90,6 +90,8 @@ std::string tensor_storage_type_name(assets::TensorStorageType storage_type) {
         return "f16";
     case assets::TensorStorageType::BF16:
         return "bf16";
+    case assets::TensorStorageType::I8:
+        return "i8";
     case assets::TensorStorageType::Q4_0:
         return "q4_0";
     case assets::TensorStorageType::Q4_1:
@@ -208,6 +210,22 @@ std::optional<float> parse_finite_float_option(
     return std::nullopt;
 }
 
+std::optional<float> parse_positive_finite_float_option(
+    const std::unordered_map<std::string, std::string> & options,
+    std::initializer_list<std::string_view> keys) {
+    if (const auto match = find_option_match(options, keys)) {
+        const float value = parse_float_value(match->value, match->key);
+        if (!std::isfinite(value)) {
+            throw std::runtime_error(match->key + " must be a finite float");
+        }
+        if (value <= 0.0F) {
+            throw std::runtime_error(match->key + " must be positive");
+        }
+        return value;
+    }
+    return std::nullopt;
+}
+
 std::optional<uint32_t> parse_u32_option(
     const std::unordered_map<std::string, std::string> & options,
     std::initializer_list<std::string_view> keys) {
@@ -280,6 +298,18 @@ assets::TensorStorageType parse_tensor_storage_option(
         return storage_type;
     }
     throw std::runtime_error(match->key + " supports only " + join_tensor_storage_types(allowed));
+}
+
+assets::TensorStorageType parse_tensor_storage_option(
+    const std::unordered_map<std::string, std::string> & options,
+    std::string_view key,
+    std::string_view fallback_key,
+    assets::TensorStorageType fallback,
+    std::initializer_list<assets::TensorStorageType> allowed) {
+    if (find_option_match(options, {key}).has_value()) {
+        return parse_tensor_storage_option(options, key, fallback, allowed);
+    }
+    return parse_tensor_storage_option(options, fallback_key, fallback, allowed);
 }
 
 uint64_t random_u64_seed() {

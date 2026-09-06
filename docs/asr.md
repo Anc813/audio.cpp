@@ -3,6 +3,7 @@
 | Model | Family | Mode(s) | Quick Start |
 |---|---|---|---|
 | Fun-ASR-Nano | `fun_asr_nano` | offline | [Fun-ASR-Nano](#fun-asr-nano) |
+| Granite Speech 5.0 TurboCTC | `granite5asr` | offline | [Granite Speech 5.0 TurboCTC](community_models/granite5asr.md) |
 | Qwen3 ASR | `qwen3_asr` | offline, streaming | [Qwen3 ASR](#qwen3-asr) |
 | Citrinet ASR | `citrinet_asr` | offline | [Citrinet ASR](#citrinet-asr) |
 | Kroko Community ASR | `kroko_asr` | offline, streaming | [Kroko Community ASR](#kroko-community-asr) |
@@ -10,6 +11,7 @@
 | Hviske ASR | `hviske_asr` | offline | [Hviske ASR](#hviske-asr) |
 | Nemotron ASR | `nemotron_asr` | offline, streaming | [Nemotron ASR](#nemotron-asr) |
 | Parakeet-TDT | `parakeet_tdt` | offline, streaming | [Parakeet-TDT](#parakeet-tdt) |
+| SenseVoice-Small | `sense_asr` | offline, streaming | [SenseVoice-Small](#sensevoice-small) |
 | VibeVoice ASR | `vibevoice_asr` | offline | [VibeVoice ASR](#vibevoice-asr) |
 | Voxtral Realtime | `voxtral_realtime` | offline, streaming | [Voxtral Realtime](#voxtral-realtime) |
 
@@ -157,10 +159,31 @@ audiocpp_cli --task asr --family higgs_audio_stt --model models/higgs-audio-v3-s
 | `--language` | language code | model default (`en`) | Recognition language hint. |
 | `--mode` | `offline`, `streaming` | `offline` | Full-context or streaming session. |
 | `--max-tokens` | integer | model default | Maximum generated transcript tokens. |
-| `--request-option enable_thinking=true|false` | bool | `true` | Enable the model thinking prompt. |
+| `--request-option enable_thinking=true\|false` | bool | `true` | Enable the model thinking prompt. |
 | `--audio-chunk-mode` | `auto`, `fixed`, `none` | `auto` | Long-audio chunking mode. `auto` uses fixed chunks. |
-| `--audio-chunk-seconds` | float seconds | `4` | Fixed audio chunk duration. |
+| `--request-option audio_chunk_duration_sec=<seconds>` / `--audio-chunk-seconds` | float seconds | `4` | Fixed audio chunk duration. |
 | `--text-out` | TXT path | not set | Transcript output. The transcript is also printed to stdout. |
+| `--session-option higgs_audio_stt.weight_type=<type>` | `native`, `f32`, `f16`, `bf16`, `q8_0` | `native` | Shared text decoder weight storage type. |
+| `--session-option higgs_audio_stt.audio_encoder_weight_type=<type>` | `native`, `f32`, `f16` | `native` | Audio encoder convolution weight storage type. |
+| `--session-option higgs_audio_stt.text_decoder_weight_type=<type>` | `native`, `f32`, `f16`, `bf16`, `q8_0` | `higgs_audio_stt.weight_type` or `native` | Text decoder matmul weight storage type. |
+
+Compatibility aliases are applied before v1 option validation:
+
+| Legacy request option | v1 request option |
+|---|---|
+| `audio_chunk_seconds` | `audio_chunk_duration_sec` |
+| `audio_chunk_duration_seconds` | `audio_chunk_duration_sec` |
+| `audio_chunk_duration` | `audio_chunk_duration_sec` |
+
+| Legacy session option | v1 session option |
+|---|---|
+| `weight_type` | `higgs_audio_stt.weight_type` |
+| `audio_encoder_weight_type` | `higgs_audio_stt.audio_encoder_weight_type` |
+| `text_decoder_weight_type` | `higgs_audio_stt.text_decoder_weight_type` |
+| `audio_encoder_graph_arena_mb` | `higgs_audio_stt.audio_encoder_graph_arena_mb` |
+| `text_decoder_prefill_graph_arena_mb` | `higgs_audio_stt.text_decoder_prefill_graph_arena_mb` |
+| `text_decoder_decode_graph_arena_mb` | `higgs_audio_stt.text_decoder_decode_graph_arena_mb` |
+| `text_decoder_weight_context_mb` | `higgs_audio_stt.text_decoder_weight_context_mb` |
 
 ## Hviske ASR
 
@@ -193,7 +216,7 @@ completed GGUF can therefore be moved, renamed, and passed directly to `--model`
 |---|---|---:|---|
 | `--audio` | WAV path | required | Speech input. |
 | `--language` | language code | `da` | Recognition language; can be omitted for the Danish model path. |
-| `--request-option punctuation=true|false` | bool | model default | Enable punctuation tokens in the decoder prompt. |
+| `--request-option punctuation=true\|false` | bool | model default | Enable punctuation tokens in the decoder prompt. |
 | `--max-tokens` | integer | model default | Maximum generated transcript tokens. |
 | `--num-beams` | integer | `1` | Beam-search beam count; `1` uses greedy or sampling decode. |
 | `--request-option length_penalty=<float>` | float | model default | Beam-search length penalty. |
@@ -203,8 +226,16 @@ completed GGUF can therefore be moved, renamed, and passed directly to `--model`
 | `--top-p` | float | model default | Nucleus sampling limit. |
 | `--seed` | integer | random if omitted | Sampling seed. |
 | `--audio-chunk-mode` | `auto`, `fixed`, `none` | `auto` | Long-audio chunking mode. `auto` uses the model clip limit and speech-energy boundaries when chunking is needed. |
-| `--audio-chunk-seconds` | float seconds | model config | Fixed audio chunk duration. |
+| `--request-option audio_chunk_duration_sec=<seconds>` | float seconds | model config | Fixed audio chunk duration. |
 | `--text-out` | TXT path | not set | Transcript output. The transcript is also printed to stdout. |
+
+Compatibility aliases for existing requests:
+
+| Legacy option | Current option |
+|---|---|
+| `audio_chunk_seconds` | `audio_chunk_duration_sec` |
+| `audio_chunk_duration_seconds` | `audio_chunk_duration_sec` |
+| `audio_chunk_duration` | `audio_chunk_duration_sec` |
 
 ## Nemotron ASR
 
@@ -247,10 +278,10 @@ audiocpp_cli --task asr --family nemotron_asr --model models/nemotron-3.5-asr-st
 | `--mode` | `offline`, `streaming` | `offline` | Full-context or streaming session. |
 | `--request-option lookahead_tokens=<n>` | integer | model default | Chunk-limited encoder right context. |
 | `--max-tokens` | integer | model-derived limit | Maximum RNNT generated tokens; `0` uses the model-derived limit. |
-| `--request-option keep_language_tags=true|false` | bool | `false` | Keep language tag tokens in decoded text. |
+| `--request-option keep_language_tags=true\|false` | bool | `false` | Keep language tag tokens in decoded text. |
 | `--words-out` | JSON path | not set | Write token timestamp output when produced. |
 | `--text-out` | TXT path | not set | Transcript output. The transcript is also printed to stdout. |
-| `--session-option nemotron_asr.mem_saver=true|false` | bool | `false` | Release the offline encoder graph after each offline request. |
+| `--session-option nemotron_asr.mem_saver=true\|false` | bool | `false` | Release the offline encoder graph after each offline request. |
 
 ## Parakeet-TDT
 
@@ -269,9 +300,39 @@ Use `parakeet_tdt_f16` for the F16 GGUF variant. See
 [Parakeet-TDT 0.6B v3](community_models/parakeet_tdt.md) for long-form,
 streaming, conversion, options, validation, and performance details.
 
+## SenseVoice-Small
+
+SenseVoice-Small is a community multilingual ASR port with offline and buffered
+streaming sessions, language/event/emotion tags, and optional inverse text
+normalization. The recommended package is the standalone Q8 GGUF from
+FunAudioLLM.
+
+```bash
+audiocpp_cli --task asr --family sense_asr \
+  --model models/SenseVoice-Small-GGUF/sensevoice-small-q8-audiocpp-v1.gguf \
+  --backend cuda --audio speech_16k.wav --text-out transcript.txt
+```
+
+Streaming:
+
+```bash
+audiocpp_cli --task asr --mode streaming --family sense_asr \
+  --model models/SenseVoice-Small-GGUF/sensevoice-small-q8-audiocpp-v1.gguf \
+  --backend cuda --audio speech_16k.wav \
+  --request-option audio_chunk_duration_sec=5 --text-out transcript.txt
+```
+
+See [SenseVoice-Small](community_models/sense_asr.md) for language tags,
+chunking, server usage, and validation notes.
+
 ## VibeVoice ASR
 
 VibeVoice ASR is an offline ASR model with greedy, sampling, and beam-search decode paths. It can return transcription text and structured segment/speaker-turn output when the model produces timestamps.
+
+A fully quantized port of the same model — INT8 activations through the encoder,
+ternary BitNet weights in the decoder — lives under community models as
+`vibeasr`: see [VibeASR](community_models/vibeasr.md). It is not a separate
+model, only a CPU-only alternative numeric pipeline for the same weights.
 
 | Field | Value |
 |---|---|

@@ -65,12 +65,18 @@ const char * status_text(int status) noexcept {
     switch (status) {
     case 200:
         return "OK";
+    case 204:
+        return "No Content";
     case 400:
         return "Bad Request";
+    case 403:
+        return "Forbidden";
     case 404:
         return "Not Found";
     case 405:
         return "Method Not Allowed";
+    case 413:
+        return "Payload Too Large";
     case 500:
         return "Internal Server Error";
     case 503:
@@ -172,10 +178,11 @@ void set_send_timeout(SocketHandle socket, int timeout_ms) {
 #endif
 }
 
-// The one endpoint that consumes its body incrementally. Gating on the path as
+// The endpoints that consume their body incrementally. Gating on the path as
 // well as the encoding keeps every other endpoint's request handling bit-for-bit
 // unchanged, instead of silently altering how any chunked request is read.
-constexpr std::string_view kLiveIngestPath = "/v1/audio/transcriptions/live";
+constexpr std::string_view kLiveTranscriptionPath = "/v1/audio/transcriptions/live";
+constexpr std::string_view kLiveSpeechPath = "/v1/audio/speech/live";
 
 // True only when the header names exactly one transfer-coding and that coding is
 // "chunked". A substring test would accept "notchunked" as well as chains like
@@ -203,7 +210,7 @@ bool is_chunked_only(std::string_view value) {
 }
 
 bool wants_incremental_body(const HttpRequest & request) {
-    if (request.path != kLiveIngestPath) {
+    if (request.path != kLiveTranscriptionPath && request.path != kLiveSpeechPath) {
         return false;
     }
     const auto it = request.headers.find("transfer-encoding");
@@ -806,7 +813,7 @@ bool wait_for_client(SocketHandle socket, int timeout_ms) {
 }  // namespace
 
 HttpResponse json_response(std::string body, int status) {
-    return HttpResponse{status, "application/json", std::move(body), {}};
+    return HttpResponse{status, "application/json", std::move(body), {}, {}};
 }
 
 HttpResponse error_response(int status, const std::string & message, const std::string & type) {

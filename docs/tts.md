@@ -3,26 +3,40 @@
 | Model | Family | Task(s) | Quick Start |
 |---|---|---|---|
 | Qwen3 TTS | `qwen3_tts` | `tts`, `vdes` | [Qwen3 TTS](#qwen3-tts) |
+| BreezeTTS 2 | `breeze_tts` | `tts`, `clon` | [BreezeTTS 2](models/breeze_tts.md) |
 | Chatterbox | `chatterbox` | `clon`, `vc` | [Chatterbox](#chatterbox) |
 | Confucius4-TTS | `confucius4_tts` | `clon` | [Confucius4-TTS](#confucius4-tts) |
+| CosyVoice3 | `cosyvoice3` | `tts`, `clon` | [CosyVoice3](models/cosyvoice3.md) |
 | DramaBox | `dramabox` | `tts`, `clon` | [DramaBox](#dramabox) |
+| DotTTS | `dots_tts` | `tts`, `clon` | [DotTTS](#dottts) |
+| F5-TTS | `f5_tts` | `tts`, `clon` | [F5-TTS](community_models/f5_tts.md) |
 | MioTTS | `miotts` | `tts` | [MioTTS](#miotts) |
 | MOSS-TTS-Local | `moss_tts_local` | `tts`, `clon` | [MOSS-TTS-Local](#moss-tts-local) |
 | MOSS-TTS-Nano | `moss_tts_nano` | `tts`, `clon` | [MOSS-TTS-Nano](#moss-tts-nano) |
+| MOSS-VoiceGenerator | `moss_voicegen` | `vdes` | [MOSS-VoiceGenerator](community_models/moss_voicegen.md) |
+| MiniMax-H3 | `minimax_h3` | `gen` dialogue audio | [MiniMax-H3](community_models/minimax_h3.md) |
+| MagpieTTS | `magpie_tts` | `tts` | [MagpieTTS](#magpietts), [full guide](models/magpie_tts.md) |
+| NeuTTS | `neutts` | `tts` | [NeuTTS](#neutts) |
 | OmniVoice | `omnivoice` | `tts` | [OmniVoice](#omnivoice), [full guide](models/omnivoice.md) |
 | PocketTTS | `pocket_tts` | `tts` | [PocketTTS](#pockettts) |
+| VoxCPM1 | `voxcpm1` | `tts` | [VoxCPM1](#voxcpm1) |
 | VoxCPM2 | `voxcpm2` | `tts`, `vdes` | [VoxCPM2](#voxcpm2) |
 | Higgs Audio v3 TTS | `higgs_audio_tts` | `tts` | [Higgs Audio v3 TTS](#higgs-audio-v3-tts) |
 | Fish Audio S2 Pro | `fish_audio` | `tts` | [Fish Audio S2 Pro](#fish-audio-s2-pro) |
-| IndexTTS2 | `index_tts2` | `tts` | [IndexTTS2](#indextts2) |
+| FireRedTTS3 | `fireredtts3` | `tts`, `clon`, `vdes` | [FireRedTTS3](models/fireredtts3.md) |
+| FireRedAudio | `firered_audio` | `asr`, `tts`, `clon`, `vdes` | [FireRedAudio](models/firered_audio.md) |
+| IndexTTS2 | `index_tts2` | `tts` | [IndexTTS](models/index_tts.md) |
+| IndexTTS2.5 | `index_tts2` (variant `2.5`) | `tts` | [IndexTTS](models/index_tts.md) |
 | Irodori-TTS | `irodori_tts` | `tts`, `vdes` | [Irodori-TTS](#irodori-tts) |
 | GLM-TTS | `glm_tts` | `tts`, `clon` | [GLM-TTS](#glm-tts) |
 | Inflect Micro v2 | `inflect_v2` | `tts` | [Inflect v2](#inflect-v2) |
 | OuteTTS | `outetts` | `tts`, `clon` | [OuteTTS](#outetts) |
+| sanoTTS voice family | `sanotts` | `tts` | [sanoTTS](#sanotts) |
 | Supertonic | `supertonic` | `tts` | [Supertonic](#supertonic) |
+| VieNeu-TTS | `vietneu_tts` | `tts`, `clon` | [VieNeu-TTS](community_models/vietneu_tts.md) |
 | VibeVoice | `vibevoice` | `tts` | [VibeVoice](#vibevoice) |
 
-This page covers speech TTS-style families. Detailed route manuals live under `docs/models/` or `docs/community_models/` when a model needs more space.
+This page covers speech TTS-style families. MiniMax-H3 appears here for prompt-driven dialogue audio, but it uses the generation route (`--task gen`) rather than the normal speech route (`--task tts`). Detailed route manuals live under `docs/models/` or `docs/community_models/` when a model needs more space.
 
 Common CLI shape:
 
@@ -89,6 +103,52 @@ audiocpp_cli --task vc --family chatterbox --model models/chatterbox --backend c
 | `--max-tokens` | integer | `1000` | Maximum generated T3 tokens per chunk. |
 | `--do-sample` | `true`, `false` | `true` | Enable stochastic T3 sampling. |
 
+## Chatterbox Turbo
+
+Chatterbox Turbo is a [community model](community_models/chatterbox_turbo.md): Resemble AI's
+distilled 350M-parameter sibling of Chatterbox, with a GPT2-style T3 backbone (vs. the base
+model's 0.5B Llama-style backbone), a GPT2 BPE tokenizer with 19 built-in emotion/style tags
+(`[laugh]`, `[sigh]`, ...), and a 2-step meanflow-distilled S3Gen decoder (vs. the base model's
+10-step CFG decoder) for substantially faster built-in-voice TTS. It is English-only.
+
+`chatterbox_turbo` is a separate model family from `chatterbox` (not a variant selectable within
+it): its T3 backbone and tokenizer differ from the base model's, and it reuses base Chatterbox's
+own S3Gen/HiFT-vocoder loader code for the flow decoder and vocoder half.
+
+The package is one self-contained, audio.cpp-native GGUF produced by repacking Resemble AI's
+weights (via the third-party `cstr/chatterbox-turbo-GGUF` conversion published for the CrispASR
+project, MIT-relicensed) with
+[`tools/community_models/chatterbox_turbo/repack_chatterbox_turbo_gguf.py`](../tools/community_models/chatterbox_turbo/repack_chatterbox_turbo_gguf.py)
+— see that model's community doc for details.
+
+**Current limitations:** only the built-in default voice baked into the package is supported.
+Custom voice cloning is not supported; `--voice-ref` is rejected with an explicit error rather
+than silently ignored.
+
+| Field | Value |
+|---|---|
+| Family | `chatterbox_turbo` |
+| Model directory | `Chatterbox-Turbo-GGUF/chatterbox-turbo-{q8_0,f16}.gguf` (single self-contained file) |
+| Tasks | `tts` |
+| Modes | `offline` |
+| Languages | `en` |
+| Voice input | Not supported — omit `--voice-ref` to use the built-in voice |
+| Built-in voices | One, embedded in the package |
+
+```bash
+audiocpp_cli --task tts --family chatterbox_turbo --model models/Chatterbox-Turbo-GGUF/chatterbox-turbo-q8_0.gguf --backend cuda --text "Hello from Chatterbox Turbo." --out out.wav
+```
+
+| Option | Values | Default | Meaning |
+|---|---|---:|---|
+| `--temperature` | float | `0.8` | T3 sampling temperature. |
+| `--top-p` | float | `0.95` | T3 nucleus sampling limit. |
+| `top_k` (session option) | integer | `1000` | T3 top-k sampling limit. |
+| `--repetition-penalty` | float | `1.2` | T3 repetition penalty. |
+| `--max-tokens` | integer | `1000` | Maximum generated T3 tokens. |
+
+`--guidance-scale`/exaggeration/min_p have no effect on Turbo (it was distilled without CFG) and are accepted but ignored, matching upstream's own behavior.
+
 ## Confucius4-TTS
 
 Confucius4-TTS is an experimental multilingual voice-cloning TTS model packaged as a standalone GGUF bundle. It supports offline generation and streaming text input, using reference speech, language-aware text normalization, T2S semantic generation, S2A flow matching, style encoding, semantic audio features, and BigVGAN vocoding.
@@ -136,7 +196,7 @@ audiocpp_cli --task clon --family confucius4_tts --model models/Confucius4-TTS-G
 | `--request-option edge_fade_duration_sec=<seconds>` | seconds | `0.1` | Fade duration applied at segment edges. |
 | `--request-option edge_pad_duration_sec=<seconds>` | seconds | `0.1` | Silence padding applied at segment edges. |
 | `--seed` | integer | `1234` | Seed for T2S sampling and S2A noise initialization. |
-| `--session-option confucius4_tts.mem_saver=true|false` | bool | `false` | Release staged graphs after request phases; default keeps them cached for reuse. |
+| `--session-option confucius4_tts.mem_saver=true\|false` | bool | `false` | Release staged graphs after request phases; default keeps them cached for reuse. |
 
 ## DramaBox
 
@@ -165,6 +225,8 @@ Voice clone:
 audiocpp_cli --task clon --family dramabox --model models/DramaBox-GGUF/dramabox-q8_0.gguf --backend cuda --text "Hello from DramaBox." --voice-ref assets/resources/b.wav --out out.wav
 ```
 
+Older prebuilts that reject `--task clon` can use `--task tts --voice-ref ...`; the same reference-conditioning path is used.
+
 | Option | Values | Default | Meaning |
 |---|---|---:|---|
 | `--voice-ref` / `--target-voice` | WAV path | not set | Reference voice for cloning; omitted requests text-only speech. |
@@ -175,13 +237,36 @@ audiocpp_cli --task clon --family dramabox --model models/DramaBox-GGUF/dramabox
 | `--request-option spatio_temporal_guidance_scale=<float>` | float | `1.5` | Spatio-temporal guidance scale. Values greater than `0` enable STG. |
 | `--request-option duration_scale=<float>` | float | `1.1` | Multiplier applied to the estimated prompt duration when `duration_sec` is `0`. |
 | `--request-option reference_duration_sec=<seconds>` | seconds | `10.0` | Reference voice crop/repeat duration. |
-| `--request-option guidance_rescale=auto|<number>` | string | `auto` | Guidance rescale mode or explicit numeric value. |
+| `--request-option guidance_rescale=auto\|<number>` | string | `auto` | Guidance rescale mode or explicit numeric value. |
 | `--request-option audio_chunk_threshold_sec=<seconds>` | seconds | `45.0` | Estimated duration threshold that switches to long-form chunking. |
 | `--request-option audio_chunk_duration_sec=<seconds>` | seconds | `37.0` | Target estimated duration for each long-form chunk. |
 | `--request-option cross_fade_duration_sec=<seconds>` | seconds | `0.05` | Equal-power cross-fade between long-form chunks. |
 | `--seed` | integer | `42` | Torch-compatible CUDA noise seed for diffusion sampling. |
-| `--session-option dramabox.perf_mode=off|flash_attention` | enum | `off` | Attention implementation mode. `off` keeps the exact reference-query attention path; `flash_attention` enables the optimized path. |
-| `--session-option dramabox.mem_saver=true|false` | bool | `false` | Release staged runtime graphs and weights immediately after each request phase to reduce peak and resident VRAM; default keeps components cached for reuse. |
+| `--session-option dramabox.perf_mode=off\|flash_attention` | enum | `off` | Attention implementation mode. `off` keeps the exact reference-query attention path; `flash_attention` enables the optimized path. |
+| `--session-option dramabox.mem_saver=true\|false` | bool | `false` | Release staged runtime graphs and weights immediately after each request phase to reduce peak and resident VRAM; default keeps components cached for reuse. |
+
+## DotTTS
+
+DotTTS is an experimental multilingual TTS and voice-cloning family with SOAR
+and MeanFlow GGUF packages. SOAR is the default download. See
+[DotTTS](models/dots_tts.md) for template, streaming, chunking, and full option
+details.
+
+```bash
+python3 tools/model_manager_v2.py install dots_tts_soar_q8_0
+
+audiocpp_cli --task tts --family dots_tts \
+  --model models/DotTTS-SOAR-GGUF/dots-tts-soar-q8_0.gguf \
+  --backend cuda \
+  --text "Our field team finished the morning inspection and prepared a concise update." \
+  --voice-ref assets/resources/a.wav \
+  --reference-text "This little work was finished in the year eighteen o three, and intended for immediate publication." \
+  --request-option reference_duration_sec=5 \
+  --out out.wav
+```
+
+For MeanFlow, install `dots_tts_mf_q8_0` and use
+`models/DotTTS-MF-GGUF/dots-tts-mf-q8_0.gguf` with the same runtime options.
 
 ## MioTTS
 
@@ -220,11 +305,11 @@ audiocpp_cli --task tts --family miotts --model models/MioTTS-1.7B-GGUF/miotts-1
 | `--repetition-penalty` | float | `1.0` | LM repetition penalty. |
 | `--do-sample` | `true`, `false` | `true` | Enable stochastic LM sampling. |
 | `--session-option miotts.codec_model_path=<dir>` | directory | sibling MioCodec directory | MioCodec model used for acoustic decoding. |
-| `--request-option miotts.best_of_n_enabled=true|false` | bool | `false` | Run best-of-N candidate selection. |
+| `--request-option miotts.best_of_n_enabled=true\|false` | bool | `false` | Run best-of-N candidate selection. |
 | `--request-option miotts.best_of_n=<n>` | integer | session default | Generate n candidates and select by ASR scoring. |
 | `--session-option miotts.best_of_n_default=<n>` | integer | `1` | Default best-of-N candidate count. |
 | `--session-option miotts.best_of_n_max=<n>` | integer | `8` | Maximum best-of-N candidate count. |
-| `--session-option miotts.best_of_n_language=auto|en|ja` | enum | `auto` | Default language used when scoring candidates. |
+| `--session-option miotts.best_of_n_language=auto\|en\|ja` | enum | `auto` | Default language used when scoring candidates. |
 | `--session-option miotts.best_of_n_asr_model_path=<dir>` | directory | sibling Qwen3-ASR directory | Qwen3-ASR model used for best-of-N scoring. |
 
 ## MOSS-TTS-Local
@@ -279,6 +364,47 @@ Voice clone:
 
 ```bash
 audiocpp_cli --task clon --family moss_tts_nano --model /path/to/MOSS-TTS-Nano-100M --backend cuda --text "Hello from MOSS-TTS-Nano." --voice-ref /path/to/reference.wav --reference-text "Reference transcript when available." --out out.wav
+```
+
+## MagpieTTS
+
+MagpieTTS Multilingual 357M is a multilingual TTS model with baked speaker
+context prompts and a NanoCodec waveform decoder. The current package is a
+standalone GGUF directory.
+
+```bash
+python3 tools/model_manager_v2.py install magpie_tts_orig
+
+audiocpp_cli --task tts --family magpie_tts \
+  --model models/MagpieTTS-Multilingual-357M-GGUF \
+  --backend cuda \
+  --language en \
+  --text "The production coordinator reviewed the overnight audio report and sent one clear update." \
+  --request-option voice_id=Sofia \
+  --out out.wav
+```
+
+Use `--request-option voice_id=<name-or-index>` to select one of the baked
+speaker prompts included with the package. See [MagpieTTS](models/magpie_tts.md)
+for supported languages, long-form controls, and sampling options.
+
+## NeuTTS
+
+NeuTTS is an experimental English TTS family with built-in speaker prompts and
+emotion-token control. The default package is the standalone 2E GGUF. See
+[NeuTTS](models/neutts.md) for built-in voice ids, emotion options, streaming,
+and full option details.
+
+```bash
+python3 tools/model_manager_v2.py install neutts
+
+audiocpp_cli --task tts --family neutts \
+  --model models/NeuTTS-2E-GGUF/neutts-2e-orig.gguf \
+  --backend cuda \
+  --text "The release checklist is almost complete, and the baseline run looks healthy." \
+  --request-option voice_id=emily \
+  --request-option emotion=neutral \
+  --out out.wav
 ```
 
 ## OmniVoice
@@ -351,6 +477,49 @@ audiocpp_cli --task tts --family pocket_tts --model models/pocket-tts --backend 
 | `--text-chunk-size` | integer chars | `256` | Long-form chunk size. |
 | `--session-option pocket_tts.voice_state_cache_slots=<n>` | integer slots | `4` | Prepared voice-state cache slots; set `0` to disable reuse. |
 
+## VoxCPM1
+
+VoxCPM1 supports offline and streaming TTS plus short-reference voice cloning. It reuses the VoxCPM2 runtime tree with a GGUF tensor-adaptation layer that understands the OpenBMB folded AudioVAE weights. The registered package is the 16 kHz 0.5B model; the runtime is size-agnostic, so a different VoxCPM1 GGUF can still be loaded via an explicit `--model <path>`.
+
+| Field | Value |
+|---|---|
+| Family | `voxcpm1` |
+| Model directory | `models/VoxCPM1-GGUF` (0.5B) |
+| Task | `tts` |
+| Modes | `offline`, `streaming` |
+| Languages | Model auto-handles supported languages |
+| Voice input | Optional reference WAV; optional transcript through `--reference-text` |
+| Built-in voices | Not exposed |
+
+Text to speech:
+
+```bash
+audiocpp_cli --task tts --family voxcpm1 --model models/VoxCPM1-GGUF/voxcpm-0.5b-q8_0-audiovae-f16.gguf --backend cpu --text "Hello from VoxCPM1." --out out.wav
+```
+
+Voice clone:
+
+```bash
+audiocpp_cli --task tts --family voxcpm1 --model models/VoxCPM1-GGUF/voxcpm-0.5b-q8_0-audiovae-f16.gguf --backend cpu --text "Hello from VoxCPM1." --voice-ref assets/resources/b.wav --out out.wav
+```
+
+Streaming output:
+
+```bash
+audiocpp_cli --task tts --family voxcpm1 --model models/VoxCPM1-GGUF/voxcpm-0.5b-q8_0-audiovae-f16.gguf --backend cpu --mode streaming --text "Hello from VoxCPM1." --request-option retry_badcase=false --out out.wav
+```
+
+| Option | Values | Default | Meaning |
+|---|---:|---:|---|
+| `--voice-ref` | WAV path | not set | Reference speaker audio. |
+| `--reference-text` | text | empty string | Transcript for the reference audio (clone prompting). |
+| `--mode` | `offline`, `streaming` | `offline` | Full-output or streaming run mode; streaming requires `retry_badcase=false`. |
+| `--session-option voxcpm1.mem_saver=true\|false` | bool | `false` | Use tighter graph workspaces and release MiniCPM/AudioVAE request graphs after completion to reduce resident VRAM. |
+| `--session-option voxcpm1.prompt_cache_slots=<n>` | integer | `1` | Prompt and prompt-audio embedding cache slots. Set to `0` to disable prompt caching. |
+| `--max-tokens` | integer | `4096` | Maximum generated AR tokens. |
+| `--num-inference-steps` | integer | `10` | Flow matching steps. |
+| `--guidance-scale` | float | `2.0` | CFG strength. |
+
 ## VoxCPM2
 
 VoxCPM2 supports plain TTS, voice design, controllable voice cloning, and an ultimate-clone style that uses both prompt audio and transcript. The CLI expresses voice design with the same text convention as the upstream examples: put the voice/style description in parentheses at the start of `--text`.
@@ -395,7 +564,7 @@ audiocpp_cli --task tts --family voxcpm2 --model models/VoxCPM2 --backend cuda -
 | `--voice-ref` | WAV path | not set | Reference speaker audio. |
 | `--reference-text` | text | empty string | Transcript for ultimate-clone style prompting. |
 | `--mode` | `offline`, `streaming` | `offline` | Full-output or streaming run mode. |
-| `--session-option voxcpm2.mem_saver=true|false` | bool | `false` | Use tighter graph workspaces and release MiniCPM/AudioVAE request graphs after completion to reduce resident VRAM. |
+| `--session-option voxcpm2.mem_saver=true\|false` | bool | `false` | Use tighter graph workspaces and release MiniCPM/AudioVAE request graphs after completion to reduce resident VRAM. |
 | `--session-option voxcpm2.prompt_cache_slots=<n>` | integer | `1` | Prompt and prompt-audio embedding cache slots. Set to `0` to disable prompt caching. |
 | `--text-chunk-size` | integer chars | `2048` | Long-form chunk size. |
 | `--text-chunk-mode` | `default`, `tag_aware`, `japanese`, `endline` | `tag_aware` | Long-form chunking mode; keeps style/tag controls attached to chunks by default. |
@@ -437,10 +606,13 @@ python3 tools/model_manager_v2.py install --models-root models higgs_audio_tts_4
 | `--top-k` | integer | `30` | AR top-k sampling limit. The narrower default is less prone to premature EOC than the Python client's `50`. |
 | `--top-p` | float | `0.8` | AR nucleus sampling limit. The Python client's unfiltered equivalent is `1.0`. |
 | `--repetition-penalty` | float | `1.1` | Accepted for Python API compatibility; Higgs audio-code sampling does not consume it. |
+| `--session-option higgs_audio_tts.attention=<mode>` | `auto`, `flash`, `eager` | `auto` | Attention kernel. `auto` uses flash except on Volta/Turing GPUs (e.g. V100), where it falls back to eager to avoid missing MMA kernels. |
 
 ## Fish Audio S2 Pro
 
-Fish Audio S2 Pro is a TTS and reference voice-clone model. The integration uses the framework text chunker for long-form input, caches prepared reference audio in the session, and supports GGUF loading through the package spec path.
+Fish Audio S2 Pro is a TTS and reference voice-clone model. See the dedicated
+[Fish Audio guide](models/fish_audio.md) for multi-reference conditioning,
+speaker-tagged turns, and the full option list.
 
 | Field | Value |
 |---|---|
@@ -464,31 +636,24 @@ Reference voice clone:
 audiocpp_cli --task tts --family fish_audio --model models/Fish-Audio-S2-Pro-GGUF/fish-audio-s2-pro-q8_0.gguf --backend cuda --text "The final render is ready for review." --voice-ref assets/resources/b.wav --reference-text "Some call me nature. Others call me Mother Nature. I've been here for over 4.5 billion years. 22,500 times longer than you." --out out.wav
 ```
 
+Multiple reference pairs:
+
+```bash
+audiocpp_cli --task tts --family fish_audio --model models/Fish-Audio-S2-Pro-GGUF/fish-audio-s2-pro-q8_0.gguf --backend cuda --text "The review is ready, and I will check the final numbers." --request-option 'multi_reference_cond=[{"audio":"assets/resources/a.wav","text":"First reference transcript."},{"audio":"assets/resources/b.wav","text":"Second reference transcript."}]' --out out.wav
+```
+
 The model manager installs the Q8_0 standalone GGUF package by default:
 
 ```bash
 python3 tools/model_manager_v2.py install --models-root models fish_audio_s2_pro_q8_0
 ```
 
-| Option | Values | Default | Meaning |
-|---|---|---:|---|
-| `--voice-ref` | WAV path | not set | Reference speaker audio for voice cloning. |
-| `--reference-text` | text | empty string | Transcript for reference audio. |
-| `--max-new-tokens` | integer | `1024` | Maximum generated semantic tokens per chunk. `0` uses the default. |
-| `--text-chunk-size` | integer chars | `200` | Long-form chunk size. |
-| `--text-chunk-mode` | `default`, `tag_aware`, `japanese`, `endline` | `default` | Framework text chunking mode. |
-| `--temperature` | float | `0.8` | Sampling temperature. |
-| `--top-k` | integer | `30` | Top-k sampling limit. |
-| `--top-p` | float | `0.8` | Nucleus sampling limit. |
-| `--seed` | integer | random when omitted | Sampling seed for reproducible output. |
-| `--session-option fish_audio.mem_saver=true|false` | bool | `false` | Release cached AR runtime graphs after each request. |
-| `--session-option fish_audio.reference_cache_slots=<n>` | integer | `1` | Prepared reference-audio cache slots. |
-| `--session-option fish_audio.weight_type=<type>` | `native`, `f32`, `f16`, `bf16`, `q8_0` | `native` | AR matmul weight storage type. |
-| `--session-option fish_audio.codec_weight_type=<type>` | `native`, `f32`, `f16`, `q8_0` | `native` | Codec conv/matmul weight storage type. |
-
 ## IndexTTS2
 
-IndexTTS2 is a Chinese and English TTS model with voice cloning and expressive emotion controls. It requires a speaker reference through the framework `--voice-ref` path.
+IndexTTS2 is a Chinese and English TTS model with voice cloning and expressive
+emotion controls. See the dedicated [IndexTTS guide](models/index_tts.md) for
+IndexTTS2, IndexTTS2.5, text normalization notes, conversion, and the full
+option list.
 
 | Field | Value |
 |---|---|
@@ -500,111 +665,38 @@ IndexTTS2 is a Chinese and English TTS model with voice cloning and expressive e
 | Voice input | Required reference WAV through `--voice-ref` |
 | Built-in voices | Not exposed |
 
-Voice clone:
+Quick start:
 
 ```bash
 audiocpp_cli --task clon --family index_tts2 --model /path/to/IndexTTS-2 --backend cuda --language en --text "Hello from IndexTTS2." --voice-ref /path/to/reference.wav --out out.wav
 ```
 
-Emotion text:
+## IndexTTS2.5
 
-```bash
-audiocpp_cli --task tts --family index_tts2 --model /path/to/IndexTTS-2 --backend cuda --language zh --text "今天的演示会更有情绪。" --voice-ref /path/to/reference.wav --emotion "你吓死我了！你是鬼吗？" --request-option emotion_alpha=0.6 --out out.wav
-```
-
-| Option | Values | Default | Meaning |
-|---|---|---:|---|
-| `--voice-ref` | WAV path | required | Reference speaker audio. |
-| `--language` | `zh`, `en` | empty | Text language label. |
-| `--emotion` | text | not set | Emotion-text conditioning through the framework style field. |
-| `--request-option emotion_alpha=<float>` | float in `[0, 1]` | `1.0` | Blend strength for explicit emotion conditioning. |
-| `--request-option emotion_vector=<v0,...,v7>` | 8 floats | not set | Explicit emotion vector. |
-| `--request-option use_emotion_text=true|false` | bool | `false` | Infer emotion from text. |
-| `--request-option use_random_emotion=true|false` | bool | `false` | Use random emotion weights in the emotion mixer. |
-| `--request-option interval_silence_ms=<n>` | milliseconds | `200` | Silence inserted between generated text chunks. |
-| `--text-chunk-size` | characters | not set | Optional framework outer text chunk size. When omitted, IndexTTS2 keeps its internal tokenizer segmentation. |
-| `--text-chunk-mode` | `default`, `tag_aware`, `japanese`, `endline` | `default` | Framework chunking mode used only when `--text-chunk-size` is set. |
-| `--max-tokens` | integer | model default | Maximum generated GPT mel tokens. |
-| `--temperature` | float | model default | GPT sampling temperature. |
-| `--top-p` | float | model default | GPT nucleus sampling limit. |
-| `--top-k` | integer | model default | GPT top-k sampling limit. |
-| `--repetition-penalty` | float | model default | GPT repetition penalty. |
-| `--do-sample` | `true`, `false` | model default | Enable stochastic GPT sampling. |
-| `--session-option index_tts2.mem_saver=true|false` | bool | `false` | Release staged reference and conditioning graphs after request phases. |
-| `--session-option index_tts2.weight_type=native|f32|f16|bf16|q8_0` | enum | `native` | Matmul weight storage type. |
-| `--session-option index_tts2.conv_weight_type=native|f32|f16` | enum | `native` | Convolution weight storage type. |
-| `--session-option index_tts2.speaker_cache_slots=<n>` | integer slots | `1` | Prepared speaker-reference cache slots; set `0` to disable reuse. |
-| `--session-option index_tts2.emotion_cache_slots=<n>` | integer slots | `1` | Prepared emotion-reference cache slots; set `0` to disable reuse. |
-| `--session-option index_tts2.emotion_text_cache_slots=<n>` | integer slots | `1` | Emotion-text weight cache slots; set `0` to disable reuse. |
-| `--session-option index_tts2.gpt_graph_arena_mb=<n>` | MB | model default | GPT graph arena size. |
-| `--session-option index_tts2.s2mel_graph_arena_mb=<n>` | MB | model default | S2Mel graph arena size. |
-| `--session-option index_tts2.reference_graph_arena_mb=<n>` | MB | model default | Reference encoder and codec graph arena size. |
-| `--session-option index_tts2.emotion_text_prefill_graph_arena_mb=<n>` | MB | model default | Emotion-text prefill graph arena size. |
-| `--session-option index_tts2.emotion_text_decode_graph_arena_mb=<n>` | MB | model default | Emotion-text cached-step graph arena size. |
-| `--session-option index_tts2.emotion_text_max_new_tokens=<n>` | tokens | `256` | Maximum generated tokens for emotion-text classification. |
-| `--session-option index_tts2.weight_context_mb=<n>` | MB | `32` | Shared ggml weight metadata context size. |
-
-## Irodori-TTS
-
-Irodori-TTS is Japanese TTS. The 500M model supports no-reference and reference-conditioned speech; the 600M VoiceDesign model adds caption-based voice design.
+IndexTTS2.5 is the multilingual `index_tts2` variant selected from model
+config. It adds Japanese, Spanish, and Arabic on top of Chinese and English.
+See the dedicated [IndexTTS guide](models/index_tts.md) for variant details,
+language notes, conversion, and the full option list.
 
 | Field | Value |
 |---|---|
-| Family | `irodori_tts` |
-| Model directories | `models/Irodori-TTS-500M-v3`, `models/Irodori-TTS-600M-v3-VoiceDesign` |
-| Required shared tokenizer | `models/llm-jp-3-150m/tokenizer.json` |
-| Required shared codec | `models/Semantic-DACVAE-Japanese-32dim/weights.safetensors` |
-| Tasks | `tts`, `clon`, `vdes` |
+| Family | `index_tts2` (the `2.5` variant is selected from the model config `version` field; no separate family) |
+| Model directory | `models/IndexTTS2.5-GGUF` (default GGUF package `index_tts2_5_q8_0`; `index_tts2_5_f16` and `index_tts2_5_orig` also available) |
+| Task | `tts`, `clon` |
 | Modes | `offline` |
-| Languages | `ja` |
-| Voice input | Optional reference WAV, no-reference mode, or caption for VoiceDesign |
+| Languages | `zh`, `en`, `ja`, `es`, `ar` |
+| Voice input | Required reference WAV through `--voice-ref` |
 | Built-in voices | Not exposed |
 
-No-reference speech:
+Quick start:
 
 ```bash
-audiocpp_cli --task tts --family irodori_tts --model /path/to/Irodori-TTS-500M-v3 --backend cuda --language ja --text "今日は短い確認です。やさしく、聞き取りやすい声でお願いします。" --request-option no_ref=true --out out.wav
+audiocpp_cli --task clon --family index_tts2 --model /path/to/IndexTTS2.5-GGUF --backend cuda --text "Hello from IndexTTS2.5." --voice-ref /path/to/reference.wav --out out.wav
 ```
 
-Voice design:
+## Irodori-TTS
 
-```bash
-audiocpp_cli --task vdes --family irodori_tts --model /path/to/Irodori-TTS-600M-v3-VoiceDesign --backend cuda --language ja --text "本日はお越しいただき、誠にありがとうございます。" --request-option caption="落ち着いた大人の男性。深く響く声で丁寧に話している。" --request-option no_ref=true --out out.wav
-```
-
-Reference-conditioned speech:
-
-```bash
-audiocpp_cli --task clon --family irodori_tts --model /path/to/Irodori-TTS-500M-v3 --backend cuda --language ja --text "同じ声で短く話します。" --voice-ref /path/to/reference.wav --request-option no_ref=false --out out.wav
-```
-
-| Option | Values | Default | Meaning |
-|---|---|---:|---|
-| `--language` | `ja` | `ja` | Spoken language. |
-| `--request-option no_ref=true|false` | bool | `true` | Use no-reference generation. Set `false` with `--voice-ref` for reference conditioning. |
-| `--voice-ref` | WAV path | not set | Optional speaker reference. |
-| `--request-option caption=<text>` | text | empty string | Voice-design caption for the 600M model. |
-| `--num-inference-steps` | integer | `40` | RF diffusion steps. |
-| `--duration-seconds` | seconds | `0` | Force duration when positive; `0` uses model-predicted duration. |
-| `--text-chunk-mode` | `japanese`, `endline` | `endline` | Long-form chunking mode; `endline` splits only at sentence punctuation followed by a line break or end of input. |
-| `--request-option duration_scale=<float>` | float | `1.0` | Scale predicted duration. |
-| `--request-option min_seconds=<float>` | seconds | `0.5` | Minimum generated duration. |
-| `--request-option max_seconds=<float>` | seconds | `30` | Maximum generated duration. |
-| `--request-option text_guidance_scale=<float>` | float | `3.0` | Text CFG strength. |
-| `--request-option speaker_guidance_scale=<float>` | float | `5.0` | Speaker CFG strength. |
-| `--request-option caption_guidance_scale=<float>` | float | `3.0` | Caption CFG strength. |
-| `--request-option guidance_mode=<name>` | `independent` | `independent` | CFG combination mode. |
-| `--request-option trim_tail=true|false` | bool | `true` | Trim trailing silence-like samples. |
-| `--session-option irodori_tts.mem_saver=true|false` | bool | `true` | Release staged runtime graphs after request phases to reduce resident VRAM. Set `false` to keep graphs resident for maximum reuse. |
-| `--session-option irodori_tts.weight_type=native|f32|f16|bf16|q8_0` | enum | `native` | Model weight storage type. |
-| `--session-option irodori_tts.codec_weight_type=native|f32|f16|q8_0` | enum | `native` | DACVAE codec weight storage type. |
-| `--session-option irodori_tts.reference_cache_slots=<n>` | integer slots | `1` | Prepared reference-speaker cache slots; set `0` to disable reuse. |
-| `--session-option irodori_tts.condition_graph_arena_mb=<n>` | MB | `256` | Condition encoder graph arena size. |
-| `--session-option irodori_tts.rf_graph_arena_mb=<n>` | MB | `768` | RF sampler graph arena size. |
-| `--session-option irodori_tts.codec_graph_arena_mb=<n>` | MB | `512` | DACVAE codec graph arena size. |
-| `--session-option irodori_tts.condition_weight_context_mb=<n>` | MB | `512` | Condition encoder weight context size. |
-| `--session-option irodori_tts.rf_weight_context_mb=<n>` | MB | `768` | RF sampler weight context size. |
-| `--session-option irodori_tts.codec_weight_context_mb=<n>` | MB | `512` | DACVAE codec weight context size. |
+Irodori-TTS is Japanese TTS under `--family irodori_tts`. v4 Small is the preferred GGUF-first package and supports no-reference speech, reference-conditioned speech, and instruction-based voice design in one checkpoint. The older 500M v3 and 600M v3 VoiceDesign packages remain supported for existing users. See [Irodori-TTS](models/irodori_tts.md) for v3/v4 differences, GGUF variants, options, and compatibility aliases.
 
 ## OuteTTS
 
@@ -680,6 +772,27 @@ See the [Inflect v2 community model guide](community_models/inflect_v2.md) for
 eSpeak-ng paths, long-form behavior, source/conversion instructions, and
 limitations.
 
+## sanoTTS
+
+sanoTTS is a family of very small offline TTS voices (English, Vietnamese,
+Indonesian; 294k to 2.27M parameters) with native GGML runtimes; the
+smallest voice also runs on microcontrollers. The GGUF packages are
+standalone and download from Hugging Face. sanoTTS requires an external
+eSpeak-ng installation:
+
+```bash
+python3 tools/model_manager_v2.py install sanotts_heart_nano_orig --models-root models
+
+audiocpp_cli --task tts --family sanotts \
+  --model models/sanoTTS-heart-nano-GGUF --backend cpu \
+  --text "Hello from sano T T S, a very small neural text to speech model." \
+  --request-option speaking_rate=1.0 \
+  --out sanotts.wav
+```
+
+See the [sanoTTS community model guide](community_models/sanotts.md) for
+eSpeak-ng paths, seed semantics, parity evidence, and performance numbers.
+
 ## Supertonic
 
 Supertonic 3 is a preset-voice multilingual TTS model. It does not use external speaker references in the current integration.
@@ -713,7 +826,7 @@ audiocpp_cli --task tts --family supertonic --model /path/to/supertonic-3 --back
 | `--seed` | integer | `1234` | Noise seed. |
 | `--text-chunk-size` | characters | `300`, or `120` for `ko`/`ja` | Framework long-form text chunk size. |
 | `--text-chunk-mode` | `default`, `tag_aware`, `japanese`, `endline` | `default` | Framework long-form text chunking mode. |
-| `--session-option supertonic.weight_type=native|f32|f16|bf16|q8_0` | enum | `native` | Weight storage type. |
+| `--session-option supertonic.weight_type=native\|f32\|f16\|bf16\|q8_0` | enum | `native` | Weight storage type. |
 | `--session-option supertonic.style_cache_slots=<n>` | integer slots | `4` | Preset voice style cache slots; set `0` to disable reuse. |
 
 ## VibeVoice

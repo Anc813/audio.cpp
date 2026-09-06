@@ -223,19 +223,31 @@ ServerConfig load_server_config(const std::filesystem::path & path) {
     config.host = engine::io::json::optional_string(root, "host", config.host);
     config.port = engine::io::json::optional_i32(root, "port", config.port);
     config.cors_origins = engine::io::json::optional_string(root, "cors_origins", config.cors_origins);
+    config.ui_enabled = engine::io::json::optional_bool(root, "ui", config.ui_enabled);
+    config.ui_management = engine::io::json::optional_bool(root, "ui_management", config.ui_management);
     config.backend = parse_server_backend(engine::io::json::optional_string(root, "backend", "cuda"));
     config.device = engine::io::json::optional_i32(root, "device", config.device);
     config.threads = engine::io::json::optional_i32(root, "threads", config.threads);
     config.lazy_load = engine::io::json::optional_bool(root, "lazy_load", config.lazy_load);
+    config.log_request_body = engine::io::json::optional_bool(root, "log_request_body", config.log_request_body);
     if (const auto * value = root.find("max_request_body_bytes")) {
         config.max_request_body_bytes = parse_max_request_body_bytes(*value);
     }
     config.busy_timeout_ms = engine::io::json::optional_i32(root, "busy_timeout_ms", config.busy_timeout_ms);
+    config.max_loaded_models = engine::io::json::optional_i32(root, "max_loaded_models", config.max_loaded_models);
+    config.idle_unload_ms = engine::io::json::optional_i32(root, "idle_unload_ms", config.idle_unload_ms);
+    config.min_free_memory_mb = engine::io::json::optional_i32(root, "min_free_memory_mb", config.min_free_memory_mb);
     if (const auto * value = root.find("live_ingest")) {
         config.live_ingest = parse_live_ingest_limits(*value, config.live_ingest, "server live_ingest");
     }
     if (const auto * value = root.find("model_spec_override")) {
         config.model_spec_override = resolve_path(base, value->as_string());
+    }
+    if (const auto * value = root.find("voice_dir")) {
+        if (!value->is_string()) {
+            throw std::runtime_error("server voice_dir must be a string");
+        }
+        config.voice_dir = resolve_path(base, value->as_string());
     }
     if (config.port <= 0 || config.port > 65535) {
         throw std::runtime_error("server port must be in 1..65535");
@@ -243,13 +255,25 @@ ServerConfig load_server_config(const std::filesystem::path & path) {
     if (config.busy_timeout_ms < 0) {
         throw std::runtime_error("server busy_timeout_ms must be >= 0 (0 disables the guard)");
     }
+    if (config.max_loaded_models < 0) {
+        throw std::runtime_error("server max_loaded_models must be >= 0 (0 disables the limit)");
+    }
+    if (config.idle_unload_ms < 0) {
+        throw std::runtime_error("server idle_unload_ms must be >= 0 (0 disables idle unload)");
+    }
+    if (config.min_free_memory_mb < 0) {
+        throw std::runtime_error("server min_free_memory_mb must be >= 0 (0 disables the memory guard)");
+    }
     if (config.threads <= 0) {
         throw std::runtime_error("server threads must be positive");
     }
 
     const auto * models = root.find("models");
-    if (models == nullptr || !models->is_array() || models->as_array().empty()) {
-        throw std::runtime_error("server config requires a non-empty models array");
+    if (models == nullptr || !models->is_array()) {
+        throw std::runtime_error("server config requires a models array");
+    }
+    if (models->as_array().empty() && !config.ui_management) {
+        throw std::runtime_error("server config requires a non-empty models array unless ui_management is enabled");
     }
     for (const auto & item : models->as_array()) {
         ServerModelConfig model;
@@ -281,6 +305,7 @@ ServerConfig load_server_config(const std::filesystem::path & path) {
         }
         model.load_options = options_from_object(item.find("load_options"));
         model.session_options = options_from_object(item.find("session_options"));
+        model.default_request_options = options_from_object(item.find("default_request_options"));
         if (const auto * voice_presets = item.find("voice_presets")) {
             if (!voice_presets->is_object()) {
                 throw std::runtime_error("voice_presets for model " + model.id + " must be an object");

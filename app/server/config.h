@@ -57,6 +57,7 @@ struct ServerModelConfig {
     std::optional<std::string> weight_id;
     std::unordered_map<std::string, std::string> load_options;
     std::unordered_map<std::string, std::string> session_options;
+    std::unordered_map<std::string, std::string> default_request_options;
     std::unordered_map<std::string, VoicePreset> voice_presets;
     std::optional<VoicePreset> default_voice_preset;
     std::optional<std::string> default_voice_preset_id;
@@ -66,10 +67,13 @@ struct ServerConfig {
     std::string host = "127.0.0.1";
     int port = 8080;
     std::string cors_origins = "";
+    bool ui_enabled = true;
+    bool ui_management = false;
     engine::core::BackendType backend = engine::core::BackendType::Cuda;
     int device = 0;
     int threads = 1;
     bool lazy_load = false;
+    bool log_request_body = false;
     uint64_t max_request_body_bytes = kDefaultMaxRequestBodyBytes;
     // A single model runs one request at a time (serialized on model.mutex). If a
     // running inference wedges the GPU -- a CUDA call that never returns cannot be
@@ -79,10 +83,33 @@ struct ServerConfig {
     // single inference (music generation can take minutes). 0 disables the guard and
     // restores unbounded waiting.
     int busy_timeout_ms = 300000;
+    // Upper bound on how many models may be resident in memory at once. Loading a
+    // model past the limit first unloads the least recently used idle model (its
+    // next request reloads it), so a multi-model config can run on a device that
+    // only fits a few of them. 1 enforces a single resident model. 0 disables the
+    // limit and keeps the original behavior: once loaded, a model stays in memory
+    // until it is unloaded explicitly or the server exits.
+    int max_loaded_models = 0;
+    // Unload every resident model once the server has been idle this long without
+    // any model load/run (steady-clock ms). 0 disables idle unload. Complements
+    // max_loaded_models: that bounds peak residency, this frees memory during
+    // quiet periods. The next request reloads lazily.
+    int idle_unload_ms = 0;
+    // Minimum free memory (host and GPU, each) the server must retain after
+    // loading a model, in MiB. Before every lazy load the server estimates the
+    // model's resident footprint from its weights and refuses to load when
+    // estimate + this headroom would not fit. 0 disables the memory guard
+    // entirely (the default), so existing deployments see no behavior change
+    // unless they opt in.
+    int min_free_memory_mb = 0;
     // Fleet-wide bounds for incrementally delivered request bodies. The defaults are
     // in LiveIngestLimits; a model entry may override any subset of them.
     LiveIngestLimits live_ingest;
     std::optional<std::filesystem::path> model_spec_override;
+    // Voice library shared across all TTS models: *.wav files plus a `prompt_text`
+    // mapping file (<basename>|<transcript>). A request `voice` name that is not a
+    // model preset resolves to <voice_dir>/<name>.wav as the cloning reference.
+    std::optional<std::filesystem::path> voice_dir;
     std::vector<ServerModelConfig> models;
 };
 

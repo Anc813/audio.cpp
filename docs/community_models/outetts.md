@@ -62,7 +62,7 @@ audiocpp_cli --task clon --family outetts \
 The installer places `DAC.speech.v1.0` and `Qwen3-ForcedAligner-0.6B` beside the OuteTTS directory. It converts the official DAC checkpoint to a safe tensor source. To do that conversion manually:
 
 ```bash
-python tools/community_models/convert_outetts_dac.py \
+python tools/community_models/outetts/convert_outetts_dac.py \
   models/DAC.speech.v1.0/weights_24khz_1.5kbps_v1.0.pth \
   models/DAC.speech.v1.0/model.safetensors
 ```
@@ -108,12 +108,12 @@ audiocpp_cli --task tts --family outetts \
 | `--text-chunk-mode` | `default`, `tag_aware`, `japanese`, `endline` | `default` | Framework long-form text chunking mode. |
 | `--reference-text` | text | none | Exact transcript of `--voice-ref`; required for voice cloning. |
 | `--request-option reference_language=<code>` | language code | `en` | Language used by the optional reference aligner. |
-| `--session-option outetts.weight_type=native|f32|f16|bf16|q8_0` | enum | `native` | Language-model weight storage type. For CUDA voice cloning, quantized weights remain compact in the GGUF but are expanded to F32 in VRAM to avoid generation divergence over long reference-codec prompts. Normal TTS and CPU cloning keep the selected type. |
+| `--session-option outetts.weight_type=native\|f32\|f16\|bf16\|q8_0` | enum | `native` | Language-model weight storage type. For CUDA voice cloning, quantized weights remain compact in the GGUF but are expanded to F32 in VRAM to avoid generation divergence over long reference-codec prompts. Normal TTS and CPU cloning keep the selected type. |
 | `--session-option outetts.aligner_path=<path>` | model path | embedded aligner | Optional external Qwen3 Forced Aligner override, required only for safetensors packages and older GGUFs without the embedded aligner. |
 
 The legacy session keys `outetts.aligner_model_path` and
 `outetts.dac_graph_context_mb` remain accepted for backward compatibility.
 | `--session-option outetts.reference_cache_slots=<n>` | integer | `1` | LRU slots for prepared reference profiles (alignment, DAC codes, and word features). Set `0` to disable reuse. |
-| `--session-option outetts.mem_saver=true|false` | bool | `false` | Release the reusable Llama cached-step graph after each generated chunk and release the aligner runtime after preparing a reference. Model and DAC weights stay resident; later requests rebuild released state. |
+| `--session-option outetts.mem_saver=true\|false` | bool | `false` | Release the reusable Llama cached-step graph after each generated chunk and release the aligner runtime after preparing a reference. Model and DAC weights stay resident; later requests rebuild released state. |
 
 With logging enabled, OuteTTS reports framework chunk count and token budget, per-chunk word/character counts, recommended and effective generation limits, the natural stop reason, reference-profile cache hits/evictions, Llama runtime and step-graph rebuild/reuse, released cache capacity, and timings for reference alignment, DAC encode/decode, prompt construction, generation, and the complete session request. See [OuteTTS validation](../reports/outetts_validation.md) for the reproducible long-lived session and memory test.
