@@ -3,7 +3,6 @@ name: Nix Build
 on:
     push:
         branches:
-            - ci/**
             - main
             - dev
             - release-0.2
